@@ -1,16 +1,18 @@
 package com.ashil812.shkarboursepro
 
+import android.app.Activity
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.material3.Text
+import android.widget.TextView
 
-class MainActivity : ComponentActivity() {
+class MainActivity : Activity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        setContent {
-            Text("Shkar Bourse")
-        }
+        val textView = TextView(this)
+        textView.text = "Shkar Bourse"
+        textView.textSize = 24f
+
+        setContentView(textView)
     }
 }
