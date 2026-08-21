@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from tsetmc import get_market_watch
 
 app = FastAPI(
     title="Shkar Bourse API",
@@ -17,3 +18,19 @@ def health():
     return {
         "status": "healthy"
     }
+
+@app.get("/market")
+def market():
+    try:
+        data = get_market_watch()
+
+        return {
+            "status": "ok",
+            "data": data
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Market data error: {str(e)}"
+        )
