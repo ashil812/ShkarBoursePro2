@@ -24,6 +24,14 @@ def health():
     }
 
 
+@app.get("/test")
+def test():
+    return {
+        "status": "ok",
+        "message": "Test endpoint works"
+    }
+
+
 @app.get("/market")
 def market():
     result = get_market_watch()
