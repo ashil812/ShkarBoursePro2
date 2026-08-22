@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
-from tsetmc import get_market_watch
+import os
+import uvicorn
+from fastapi import FastAPI
 
 app = FastAPI(
     title="Shkar Bourse API",
@@ -21,16 +22,15 @@ def health():
 
 @app.get("/market")
 def market():
-    try:
-        data = get_market_watch()
+    return {
+        "status": "ok",
+        "message": "Market endpoint is working"
+    }
 
-        return {
-            "status": "ok",
-            "data": data
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Market data error: {str(e)}"
-        )
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port
+    )
