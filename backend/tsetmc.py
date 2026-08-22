@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "https://cdn.tsetmc.com"
+URL = "https://webgw.tse.ir/InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -9,23 +9,23 @@ HEADERS = {
 
 
 def get_market_watch():
-    url = f"{BASE_URL}/api/ClosingPrice/GetMarketWatch"
-
     try:
         response = requests.get(
-            url,
+            URL,
             headers=HEADERS,
-            timeout=10
+            timeout=15
         )
 
         return {
             "status": "ok",
             "http_status": response.status_code,
-            "data": response.text[:2000]
+            "source": "webgw.tse.ir",
+            "data": response.text[:5000]
         }
 
     except requests.exceptions.RequestException as e:
         return {
             "status": "error",
+            "source": "webgw.tse.ir",
             "message": str(e)
         }
