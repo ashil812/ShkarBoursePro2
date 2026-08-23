@@ -4,8 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:allowBackup="true"
         android:label="Shkar Bourse"
-        android:theme="@style/Theme.ShkarBoursePro">
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ShkarBourse">
 
         <activity
             android:name=".MainActivity"
