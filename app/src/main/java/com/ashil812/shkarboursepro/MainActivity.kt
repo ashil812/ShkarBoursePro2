@@ -19,7 +19,7 @@ class MainActivity : Activity() {
 
     private lateinit var content: LinearLayout
 
-    private fun text(
+    private fun makeText(
         value: String,
         size: Float,
         color: Int = Color.WHITE
@@ -30,6 +30,7 @@ class MainActivity : Activity() {
             setTextColor(color)
             setPadding(24, 16, 24, 16)
             gravity = Gravity.RIGHT
+            textDirection = TextView.TEXT_DIRECTION_RTL
         }
     }
 
@@ -39,19 +40,24 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(10, 18, 30))
+            layoutDirection = LinearLayout.LAYOUT_DIRECTION_RTL
         }
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 30, 20, 20)
+            layoutDirection = LinearLayout.LAYOUT_DIRECTION_RTL
         }
 
         header.addView(
-            text("Shkar Bourse", 28f)
+            makeText(
+                "Shkar Bourse",
+                28f
+            )
         )
 
         header.addView(
-            text(
+            makeText(
                 "تحلیل هوشمند بورس ایران",
                 15f,
                 Color.LTGRAY
@@ -60,22 +66,25 @@ class MainActivity : Activity() {
 
         root.addView(header)
 
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply {
+            layoutDirection = ScrollView.LAYOUT_DIRECTION_RTL
+        }
 
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 10, 20, 30)
+            layoutDirection = LinearLayout.LAYOUT_DIRECTION_RTL
         }
 
         content.addView(
-            text(
+            makeText(
                 "🔥 فرصت‌های سرمایه‌گذاری ۶ ماهه",
                 20f
             )
         )
 
         content.addView(
-            text(
+            makeText(
                 "در حال دریافت اطلاعات از سرور...",
                 16f
             )
@@ -112,11 +121,17 @@ class MainActivity : Activity() {
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 15000
                 connection.readTimeout = 15000
+                connection.setRequestProperty(
+                    "Accept",
+                    "application/json"
+                )
 
                 val responseCode = connection.responseCode
 
                 if (responseCode != 200) {
-                    showError("خطا در دریافت اطلاعات: HTTP $responseCode")
+                    showError(
+                        "خطا در دریافت اطلاعات: HTTP $responseCode"
+                    )
                     return@thread
                 }
 
@@ -135,30 +150,46 @@ class MainActivity : Activity() {
                     content.removeAllViews()
 
                     content.addView(
-                        text(
+                        makeText(
                             "🔥 فرصت‌های سرمایه‌گذاری ۶ ماهه",
                             20f
                         )
                     )
 
+                    val title =
+                        json.optString(
+                            "title",
+                            "فرصت‌های سرمایه‌گذاری ۶ ماهه"
+                        )
+
                     content.addView(
-                        text(
+                        makeText(
+                            title,
+                            16f,
+                            Color.LTGRAY
+                        )
+                    )
+
+                    content.addView(
+                        makeText(
                             "تعداد فرصت‌ها: ${opportunities.length()}",
                             15f,
                             Color.LTGRAY
                         )
                     )
 
-                    content.addView(
-                        text(
-                            json.optString(
-                                "warning",
-                                "درصد رشد، برآورد تحلیلی است و سود تضمینی نیست."
-                            ),
-                            13f,
-                            Color.YELLOW
+                    val warning =
+                        json.optString("warning", "")
+
+                    if (warning.isNotEmpty()) {
+                        content.addView(
+                            makeText(
+                                "⚠️ $warning",
+                                14f,
+                                Color.YELLOW
+                            )
                         )
-                    )
+                    }
 
                     for (i in 0 until opportunities.length()) {
 
@@ -178,10 +209,16 @@ class MainActivity : Activity() {
                             item.optString("sector", "-")
 
                         val currentPrice =
-                            item.optLong("current_price", 0)
+                            item.optLong(
+                                "current_price",
+                                0
+                            )
 
                         val targetPrice =
-                            item.optLong("target_price_6m", 0)
+                            item.optLong(
+                                "target_price_6m",
+                                0
+                            )
 
                         val growth =
                             item.optDouble(
@@ -190,7 +227,10 @@ class MainActivity : Activity() {
                             )
 
                         val risk =
-                            item.optString("risk", "-")
+                            item.optString(
+                                "risk",
+                                "-"
+                            )
 
                         val change =
                             item.optDouble(
@@ -199,7 +239,10 @@ class MainActivity : Activity() {
                             )
 
                         val score =
-                            item.optInt("rank_score", 0)
+                            item.optInt(
+                                "rank_score",
+                                0
+                            )
 
                         val tradeValue =
                             item.optLong(
@@ -208,10 +251,15 @@ class MainActivity : Activity() {
                             )
 
                         val peText =
-                            if (item.isNull("pe")) {
+                            if (
+                                item.isNull("pe")
+                            ) {
                                 "-"
                             } else {
-                                item.optString("pe", "-")
+                                item.optDouble(
+                                    "pe",
+                                    0.0
+                                ).toString()
                             }
 
                         val reasons =
@@ -222,12 +270,19 @@ class MainActivity : Activity() {
 
                                 if (reasons != null) {
 
-                                    for (j in 0 until reasons.length()) {
+                                    for (
+                                        j in 0 until reasons.length()
+                                    ) {
 
                                         append("• ")
-                                        append(reasons.optString(j))
+                                        append(
+                                            reasons.optString(j)
+                                        )
 
-                                        if (j < reasons.length() - 1) {
+                                        if (
+                                            j <
+                                            reasons.length() - 1
+                                        ) {
                                             append("\n")
                                         }
                                     }
@@ -235,7 +290,9 @@ class MainActivity : Activity() {
                             }
 
                         val card =
-                            LinearLayout(this@MainActivity).apply {
+                            LinearLayout(
+                                this@MainActivity
+                            ).apply {
 
                                 orientation =
                                     LinearLayout.VERTICAL
@@ -248,23 +305,33 @@ class MainActivity : Activity() {
                                 )
 
                                 setBackgroundColor(
-                                    Color.rgb(24, 36, 52)
-                                )
+                                    Color.rgb(
+                                        24,
+                                        36,
+                                        52
+                                    )
+
+                                layoutDirection =
+                                    LinearLayout
+                                        .LAYOUT_DIRECTION_RTL
                             }
 
                         card.addView(
-                            text(
-                                "رتبه $rank | $ticker",
+                            makeText(
+                                "رتبه $rank  |  $ticker",
                                 21f
                             )
                         )
 
                         card.addView(
-                            text(name, 18f)
+                            makeText(
+                                name,
+                                18f
+                            )
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "امتیاز: $score",
                                 15f,
                                 Color.LTGRAY
@@ -272,7 +339,7 @@ class MainActivity : Activity() {
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "بخش: $sector",
                                 14f,
                                 Color.LTGRAY
@@ -280,50 +347,42 @@ class MainActivity : Activity() {
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "قیمت فعلی: $currentPrice",
                                 15f
                             )
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "هدف ۶ ماهه: $targetPrice",
                                 15f
                             )
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "رشد برآوردی: $growth٪",
                                 18f
                             )
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "تغییر امروز: $change٪",
                                 15f
                             )
                         )
 
                         card.addView(
-                            text(
+                            makeText(
                                 "ریسک: $risk",
                                 15f
                             )
                         )
 
                         card.addView(
-                            text(
-                                "P/E: $peText",
-                                14f,
-                                Color.LTGRAY
-                            )
-                        )
-
-                        card.addView(
-                            text(
+                            makeText(
                                 "ارزش معاملات: $tradeValue",
                                 14f,
                                 Color.LTGRAY
@@ -331,12 +390,22 @@ class MainActivity : Activity() {
                         )
 
                         card.addView(
-                            text(
-                                "دلایل:\n$reasonsText",
+                            makeText(
+                                "P/E: $peText",
                                 14f,
                                 Color.LTGRAY
                             )
                         )
+
+                        if (reasonsText.isNotEmpty()) {
+                            card.addView(
+                                makeText(
+                                    "دلایل:\n$reasonsText",
+                                    14f,
+                                    Color.LTGRAY
+                                )
+                            )
+                        }
 
                         content.addView(
                             card,
@@ -358,7 +427,7 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
 
                 showError(
-                    "خطا در اتصال به سرور:\n${e.message}"
+                    "خطا در اتصال به سرور:\n${e.message ?: "خطای نامشخص"}"
                 )
 
             } finally {
@@ -375,14 +444,14 @@ class MainActivity : Activity() {
             content.removeAllViews()
 
             content.addView(
-                text(
+                makeText(
                     "❌ خطا",
                     22f
                 )
             )
 
             content.addView(
-                text(
+                makeText(
                     message,
                     16f,
                     Color.LTGRAY
@@ -391,4 +460,3 @@ class MainActivity : Activity() {
         }
     }
 }
-```
