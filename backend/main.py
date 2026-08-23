@@ -1,17 +1,8 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Shkar Bourse API",
     version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 
@@ -30,17 +21,8 @@ def health():
     }
 
 
-@app.get("/market")
-def market():
-    return {
-        "status": "ok",
-        "message": "Market endpoint is working",
-        "market_status": "waiting_for_data"
-    }
-
-
-@app.get("/opportunities")
-def opportunities():
+@app.get("/six-month-opportunities")
+def six_month_opportunities():
     return {
         "status": "ok",
         "section": "six_month_opportunities",
