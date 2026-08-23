@@ -1,10 +1,11 @@
+import os
 import requests
 
-URL = "https://webgw.tse.ir/InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"
+URL = "https://tindex.app/api/public/stock-market/overview"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json, text/plain, */*",
+    "Authorization": f"Bearer {os.getenv('TINDEX_TOKEN', '')}",
+    "Accept": "application/json",
 }
 
 
@@ -13,19 +14,37 @@ def get_market_watch():
         response = requests.get(
             URL,
             headers=HEADERS,
-            timeout=15
+            timeout=30
         )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+        if not payload.get("success"):
+            return {
+                "status": "error",
+                "source": "tindex.app",
+                "message": payload.get("message", "TIndex API error"),
+                "data": payload
+            }
 
         return {
             "status": "ok",
-            "http_status": response.status_code,
-            "source": "webgw.tse.ir",
-            "data": response.text[:5000]
+            "source": "tindex.app",
+            "data": payload.get("data")
         }
 
     except requests.exceptions.RequestException as e:
         return {
             "status": "error",
-            "source": "webgw.tse.ir",
+            "source": "tindex.app",
             "message": str(e)
+        }
+
+    except ValueError as e:
+        return {
+            "status": "error",
+            "source": "tindex.app",
+            "message": f"Invalid JSON response: {str(e)}"
         }
