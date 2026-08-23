@@ -86,14 +86,6 @@ return {
 "target_price_6m": 1956,
 "estimated_growth_percent": 40,
 "risk": "متوسط",
-"change_percent": 2.95,
-"trade_value": 16375040313207,
-"pe": 3.1,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بسیار بالا",
-"P/E نسبتاً مناسب"
-],
 "rank": 1
 },
 {
@@ -105,14 +97,6 @@ return {
 "target_price_6m": 3651,
 "estimated_growth_percent": 40,
 "risk": "متوسط",
-"change_percent": 2.96,
-"trade_value": 13740663451477,
-"pe": 5,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بسیار بالا",
-"P/E نسبتاً مناسب"
-],
 "rank": 2
 },
 {
@@ -124,13 +108,6 @@ return {
 "target_price_6m": 795587,
 "estimated_growth_percent": 30,
 "risk": "متوسط",
-"change_percent": 3.78,
-"trade_value": 49413771956585,
-"pe": None,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بسیار بالا"
-],
 "rank": 3
 },
 {
@@ -142,31 +119,17 @@ return {
 "target_price_6m": 2011100,
 "estimated_growth_percent": 30,
 "risk": "متوسط",
-"change_percent": 3.78,
-"trade_value": 13120029429798,
-"pe": None,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بسیار بالا"
-],
 "rank": 4
 },
 {
 "rank_score": 70,
 "ticker": "خودرو",
-"name": "ایران‌ خودرو",
+"name": "ایران خودرو",
 "sector": "خودرو و ساخت قطعات",
 "current_price": 666,
 "target_price_6m": 813,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": 2.94,
-"trade_value": 9007630418254,
-"pe": -13.6,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بالا"
-],
 "rank": 5
 },
 {
@@ -178,13 +141,6 @@ return {
 "target_price_6m": 802,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": 2.02,
-"trade_value": 6463174284855,
-"pe": -4.3,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"ارزش معاملات بالا"
-],
 "rank": 6
 },
 {
@@ -196,13 +152,6 @@ return {
 "target_price_6m": 1068,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": 2.94,
-"trade_value": 3162907481125,
-"pe": 8.3,
-"reasons": [
-"مومنتوم کوتاه‌مدت مثبت",
-"P/E قابل قبول"
-],
 "rank": 7
 },
 {
@@ -214,12 +163,6 @@ return {
 "target_price_6m": 108631,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": 0.14,
-"trade_value": 17390043962552,
-"pe": None,
-"reasons": [
-"ارزش معاملات بسیار بالا"
-],
 "rank": 8
 },
 {
@@ -231,12 +174,6 @@ return {
 "target_price_6m": 63647,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": -1.58,
-"trade_value": 16766541059262,
-"pe": None,
-"reasons": [
-"ارزش معاملات بسیار بالا"
-],
 "rank": 9
 },
 {
@@ -248,12 +185,6 @@ return {
 "target_price_6m": 20611,
 "estimated_growth_percent": 22,
 "risk": "متوسط",
-"change_percent": 0.14,
-"trade_value": 16227890626689,
-"pe": None,
-"reasons": [
-"ارزش معاملات بسیار بالا"
-],
 "rank": 10
 }
 ]
@@ -261,11 +192,8 @@ return {
 
 if **name** == "**main**":
 port = int(os.environ.get("PORT", 8000))
-
-```
 uvicorn.run(
-    app,
-    host="0.0.0.0",
-    port=port
+app,
+host="0.0.0.0",
+port=port
 )
-```
