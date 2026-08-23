@@ -1,4 +1,5 @@
 import os
+import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from tsetmc import get_market_watch
@@ -30,6 +31,27 @@ def test():
         "status": "ok",
         "message": "Test endpoint works"
     }
+
+
+@app.get("/connection-test")
+def connection_test():
+    url = "https://webgw.tse.ir/InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"
+
+    try:
+        response = requests.get(url, timeout=30)
+
+        return {
+            "status": "ok",
+            "http_status": response.status_code,
+            "message": "Connection successful",
+            "response_preview": response.text[:500]
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
 @app.get("/market")
