@@ -1,8 +1,10 @@
+```kotlin
 package com.ashil812.shkarboursepro
 
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
+import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -14,19 +16,18 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
 
     private val apiUrl =
-        "https://shkar-bourse-pro2.onrender.com/opportunities"
+        "https://shkar-bourse-pro2.onrender.com"
 
-    private fun makeText(
+    private fun text(
         value: String,
         size: Float,
         color: Int = Color.WHITE
     ): TextView {
-
         return TextView(this).apply {
             text = value
             textSize = size
             setTextColor(color)
-            setPadding(24, 18, 24, 18)
+            setPadding(24, 16, 24, 16)
         }
     }
 
@@ -35,9 +36,7 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(
-                Color.rgb(10, 18, 30)
-            )
+            setBackgroundColor(Color.rgb(10, 18, 30))
         }
 
         val header = LinearLayout(this).apply {
@@ -46,57 +45,53 @@ class MainActivity : Activity() {
         }
 
         header.addView(
-            makeText(
-                "Shkar Bourse",
-                28f
-            )
+            text("Shkar Bourse", 28f)
         )
 
         header.addView(
-            makeText(
-                "تحلیل هوشمند بورس ایران",
-                15f,
-                Color.LTGRAY
-            )
+            text("تحلیل هوشمند بورس ایران", 15f, Color.LTGRAY)
         )
 
         root.addView(header)
 
-        val scrollView = ScrollView(this)
+        val scroll = ScrollView(this)
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 10, 20, 30)
         }
 
-        val connectionStatus = makeText(
-            "🔄 در حال اتصال به سرور...",
-            16f,
-            Color.YELLOW
+        content.addView(
+            text("🔥 فرصت‌های سرمایه‌گذاری ۶ ماهه", 20f)
         )
 
-        content.addView(connectionStatus)
+        val status = text(
+            "در حال دریافت اطلاعات از سرور...",
+            16f
+        )
+
+        status.setBackgroundColor(Color.rgb(24, 36, 52))
 
         content.addView(
-            makeText(
-                "🔥 بهترین فرصت‌های ۶ ماهه",
-                21f
-            )
-        )
-
-        val opportunitiesContainer =
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
+            status,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 10, 0, 20)
             }
-
-        content.addView(
-            opportunitiesContainer
         )
 
-        scrollView.addView(content)
+        val opportunitiesContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        content.addView(opportunitiesContainer)
+
+        scroll.addView(content)
 
         root.addView(
-            scrollView,
+            scroll,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -107,41 +102,30 @@ class MainActivity : Activity() {
         setContentView(root)
 
         loadOpportunities(
-            connectionStatus,
+            status,
             opportunitiesContainer
         )
     }
 
     private fun loadOpportunities(
-        statusText: TextView,
+        status: TextView,
         container: LinearLayout
     ) {
 
         thread {
 
-            var connection:
-                    HttpURLConnection? = null
-
             try {
 
-                val url = URL(apiUrl)
+                val url = URL(
+                    "$apiUrl/six-month-opportunities"
+                )
 
-                connection =
-                    url.openConnection()
-                            as HttpURLConnection
+                val connection =
+                    url.openConnection() as HttpURLConnection
 
                 connection.requestMethod = "GET"
-
-                connection.connectTimeout =
-                    15000
-
-                connection.readTimeout =
-                    15000
-
-                connection.setRequestProperty(
-                    "Accept",
-                    "application/json"
-                )
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
 
                 val responseCode =
                     connection.responseCode
@@ -155,166 +139,211 @@ class MainActivity : Activity() {
                 val response =
                     connection.inputStream
                         .bufferedReader()
-                        .use {
-                            it.readText()
-                        }
+                        .use { it.readText() }
 
                 val json =
                     JSONObject(response)
 
                 val opportunities =
-                    json.getJSONArray(
-                        "opportunities"
-                    )
+                    json.getJSONArray("opportunities")
 
                 runOnUiThread {
 
-                    statusText.text =
-                        "✅ اتصال به سرور برقرار است"
-
-                    statusText.setTextColor(
-                        Color.GREEN
-                    )
+                    status.text =
+                        "✅ اطلاعات با موفقیت دریافت شد\n" +
+                        "تعداد فرصت‌ها: ${opportunities.length()}"
 
                     container.removeAllViews()
 
-                    for (
-                        i in 0 until
-                        opportunities.length()
-                    ) {
+                    for (i in 0 until opportunities.length()) {
 
                         val item =
-                            opportunities
-                                .getJSONObject(i)
+                            opportunities.getJSONObject(i)
 
                         val rank =
-                            item.getInt("rank")
+                            item.optInt("rank")
 
                         val ticker =
-                            item.getString(
-                                "ticker"
-                            )
+                            item.optString("ticker")
 
                         val name =
-                            item.getString(
-                                "name"
-                            )
+                            item.optString("name")
 
-                        val price =
-                            item.getLong(
+                        val sector =
+                            item.optString("sector")
+
+                        val currentPrice =
+                            item.optDouble(
                                 "current_price"
                             )
 
-                        val target =
-                            item.getLong(
+                        val targetPrice =
+                            item.optDouble(
                                 "target_price_6m"
                             )
 
                         val growth =
-                            item.getDouble(
+                            item.optDouble(
                                 "estimated_growth_percent"
                             )
 
                         val risk =
-                            item.getString(
-                                "risk"
-                            )
+                            item.optString("risk")
 
                         val score =
-                            item.getInt(
-                                "rank_score"
+                            item.optInt("rank_score")
+
+                        val change =
+                            item.optDouble(
+                                "change_percent"
                             )
 
                         val reasons =
-                            item.getJSONArray(
+                            item.optJSONArray(
                                 "reasons"
                             )
 
-                        val reasonBuilder =
+                        val reasonText =
                             StringBuilder()
 
-                        for (
-                            j in 0 until
-                            reasons.length()
-                        ) {
-
-                            reasonBuilder
-                                .append("• ")
-                                .append(
-                                    reasons.getString(j)
+                        if (reasons != null) {
+                            for (j in 0 until reasons.length()) {
+                                reasonText.append(
+                                    "• ${reasons.getString(j)}\n"
                                 )
-                                .append("\n")
+                            }
                         }
 
-                        val cardText =
-                            """
-                            🏆 رتبه $rank
-                            
-                            $ticker
-                            $name
-                            
-                            💰 قیمت فعلی: $price
-                            🎯 هدف ۶ ماهه: $target
-                            
-                            📈 رشد برآوردی: $growth٪
-                            ⭐ امتیاز: $score
-                            ⚠️ ریسک: $risk
-                            
-                            دلایل:
-                            $reasonBuilder
-                            """.trimIndent()
-
                         val card =
-                            makeText(
-                                cardText,
-                                16f
-                            )
+                            LinearLayout(this).apply {
+                                orientation =
+                                    LinearLayout.VERTICAL
 
-                        card.setBackgroundColor(
-                            Color.rgb(
-                                24,
-                                36,
-                                52
+                                setPadding(
+                                    20,
+                                    18,
+                                    20,
+                                    18
+                                )
+
+                                setBackgroundColor(
+                                    Color.rgb(
+                                        24,
+                                        36,
+                                        52
+                                    )
+                                )
+                            }
+
+                        card.addView(
+                            text(
+                                "رتبه $rank  |  $ticker",
+                                21f
                             )
                         )
 
-                        val params =
-                            LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.MATCH_PARENT,
-                                LinearLayout.LayoutParams.WRAP_CONTENT
+                        card.addView(
+                            text(
+                                name,
+                                18f,
+                                Color.LTGRAY
                             )
+                        )
 
-                        params.setMargins(
-                            0,
-                            10,
-                            0,
-                            15
+                        card.addView(
+                            text(
+                                "امتیاز: $score",
+                                16f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "قیمت فعلی: ${formatNumber(currentPrice)}",
+                                16f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "هدف ۶ ماهه: ${formatNumber(targetPrice)}",
+                                16f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "رشد برآوردی: ${formatNumber(growth)}٪",
+                                17f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "تغییر روزانه: ${formatNumber(change)}٪",
+                                16f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "ریسک: $risk",
+                                16f
+                            )
+                        )
+
+                        card.addView(
+                            text(
+                                "دلیل انتخاب:\n$reasonText",
+                                15f,
+                                Color.LTGRAY
+                            )
                         )
 
                         container.addView(
                             card,
-                            params
+                            LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply {
+                                setMargins(
+                                    0,
+                                    0,
+                                    0,
+                                    18
+                                }
+                            }
                         )
                     }
                 }
+
+                connection.disconnect()
 
             } catch (e: Exception) {
 
                 runOnUiThread {
 
-                    statusText.text =
-                        "❌ خطا در اتصال به سرور\n\n" +
+                    status.text =
+                        "❌ خطا در دریافت اطلاعات\n\n" +
                         e.message
 
-                    statusText.setTextColor(
-                        Color.RED
-                    )
                 }
-
-            } finally {
-
-                connection?.disconnect()
             }
         }
     }
+
+    private fun formatNumber(
+        number: Double
+    ): String {
+
+        return if (number % 1.0 == 0.0) {
+            number.toLong().toString()
+        } else {
+            String.format(
+                "%.2f",
+                number
+            )
+        }
+    }
 }
+```
