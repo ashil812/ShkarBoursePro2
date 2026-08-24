@@ -1,36 +1,121 @@
 import os
 import time
+import threading
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
+
 import requests
 from fastapi import FastAPI
 
+
 app = FastAPI(
     title="Shkar Bourse API",
-    version="6.0.0"
+    version="7.0.0"
 )
 
-TINDEX_BASE_URL = "https://tindex.app/api/public"
-OVERVIEW_URL = f"{TINDEX_BASE_URL}/stock-market/overview"
-STOCKS_URL = f"{TINDEX_BASE_URL}/stocks/by-category/stock-energy"
 
-CACHE_SECONDS = 60
+# =========================================================
+# TINDEX
+# =========================================================
+
+TINDEX_BASE_URL = "https://tindex.app/api/public"
+
+OVERVIEW_URL = (
+    f"{TINDEX_BASE_URL}/stock-market/overview"
+)
+
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
 DAILY_LIMIT = 100
-PER_PAGE = 100
+
+# زمان بین درخواست‌های TIndex
+# بازار باز: حدود 130 ثانیه
+MARKET_REQUEST_INTERVAL = 130
+
+# خارج از زمان بازار: 15 دقیقه
+OFF_MARKET_REQUEST_INTERVAL = 900
+
+REQUEST_TIMEOUT = 30
+
+TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+
+
+# =========================================================
+# CACHE
+# =========================================================
 
 _cache_data = None
 _cache_time = 0.0
-_full_market_cache = None
-_full_market_cache_time = 0.0
+
+_last_request_time = 0.0
+_next_request_time = 0.0
 
 _daily_requests = []
-_last_error = None
 
+_last_error = None
+_last_success_time = None
+
+_request_lock = threading.Lock()
+
+
+# =========================================================
+# TIME
+# =========================================================
+
+def now_tehran():
+    return datetime.now(TEHRAN_TZ)
+
+
+def is_market_open():
+    """
+    ساعات تقریبی بازار بورس تهران:
+    09:00 تا 12:30
+    """
+
+    current = now_tehran().time()
+
+    market_start = dt_time(9, 0)
+    market_end = dt_time(12, 30)
+
+    return market_start <= current <= market_end
+
+
+def get_request_interval():
+    if is_market_open():
+        return MARKET_REQUEST_INTERVAL
+
+    return OFF_MARKET_REQUEST_INTERVAL
+
+
+def seconds_until_next_request():
+    if _last_request_time <= 0:
+        return 0
+
+    remaining = (
+        _last_request_time
+        + get_request_interval()
+        - time.time()
+    )
+
+    return max(0, int(remaining))
+
+
+# =========================================================
+# DAILY LIMIT
+# =========================================================
 
 def cleanup_daily_requests():
     global _daily_requests
+
     cutoff = time.time() - 86400
+
     _daily_requests = [
-        t for t in _daily_requests
-        if t > cutoff
+        timestamp
+        for timestamp in _daily_requests
+        if timestamp > cutoff
     ]
 
 
@@ -46,17 +131,15 @@ def daily_requests_remaining():
     )
 
 
-def can_request_tindex():
-    cleanup_daily_requests()
-
-    if len(_daily_requests) >= DAILY_LIMIT:
-        return False, "سقف 100 درخواست در 24 ساعت مصرف شده است."
-
-    return True, None
-
+# =========================================================
+# HEADERS
+# =========================================================
 
 def get_headers():
-    token = os.getenv("TINDEX_TOKEN", "").strip()
+    token = os.getenv(
+        "TINDEX_TOKEN",
+        ""
+    ).strip()
 
     if not token:
         return None
@@ -64,88 +147,291 @@ def get_headers():
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "User-Agent": "ShkarBoursePro2/6.0"
+        "User-Agent": "ShkarBoursePro2/7.0"
     }
 
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 def safe_number(value, default=0.0):
     try:
         if value is None:
             return default
+
         return float(value)
+
     except (TypeError, ValueError):
         return default
 
 
-def make_tindex_request(url, params=None):
-    global _last_error
-
-    headers = get_headers()
-
-    if headers is None:
-        _last_error = "TINDEX_TOKEN تنظیم نشده است."
-        return {
-            "status": "error",
-            "source": "tindex.app",
-            "message": _last_error
-        }
-
-    allowed, reason = can_request_tindex()
-
-    if not allowed:
-        return {
-            "status": "error",
-            "source": "local-rate-limit",
-            "message": reason,
-            "daily_requests_used": daily_requests_used(),
-            "daily_requests_remaining": daily_requests_remaining()
-        }
-
-    _daily_requests.append(time.time())
-
+def safe_int(value, default=0):
     try:
-        response = requests.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=30
+        if value is None:
+            return default
+
+        return int(float(value))
+
+    except (TypeError, ValueError):
+        return default
+
+
+# =========================================================
+# TINDEX REQUEST
+# =========================================================
+
+def make_tindex_request(force=False):
+    global _last_error
+    global _last_request_time
+    global _next_request_time
+    global _last_success_time
+
+    with _request_lock:
+
+        # -------------------------------------------------
+        # اگر کش معتبر داریم، اصلاً TIndex را صدا نزن
+        # -------------------------------------------------
+
+        if (
+            not force
+            and _cache_data is not None
+            and _last_request_time > 0
+            and time.time() - _last_request_time
+            < get_request_interval()
+        ):
+            return {
+                "status": "ok",
+                "source": "tindex.app",
+                "cached": True,
+                "data": _cache_data
+            }
+
+        # -------------------------------------------------
+        # بررسی فاصله اجباری بین درخواست‌ها
+        # -------------------------------------------------
+
+        if (
+            _last_request_time > 0
+            and time.time() - _last_request_time
+            < get_request_interval()
+        ):
+            remaining = seconds_until_next_request()
+
+            return {
+                "status": "ok",
+                "source": "local-cache",
+                "cached": True,
+                "data": _cache_data,
+                "message": (
+                    f"درخواست بعدی TIndex حدود "
+                    f"{remaining} ثانیه دیگر انجام می‌شود."
+                ),
+                "seconds_until_next_request": remaining
+            }
+
+        # -------------------------------------------------
+        # توکن
+        # -------------------------------------------------
+
+        headers = get_headers()
+
+        if headers is None:
+
+            _last_error = (
+                "TINDEX_TOKEN تنظیم نشده است."
+            )
+
+            return {
+                "status": "error",
+                "source": "tindex.app",
+                "message": _last_error
+            }
+
+        # -------------------------------------------------
+        # سقف روزانه
+        # -------------------------------------------------
+
+        cleanup_daily_requests()
+
+        if len(_daily_requests) >= DAILY_LIMIT:
+
+            _last_error = (
+                "سقف 100 درخواست در 24 ساعت مصرف شده است."
+            )
+
+            return {
+                "status": "error",
+                "source": "local-rate-limit",
+                "message": _last_error,
+                "daily_requests_used": (
+                    daily_requests_used()
+                ),
+                "daily_requests_remaining": (
+                    daily_requests_remaining()
+                )
+            }
+
+        # -------------------------------------------------
+        # ثبت درخواست
+        # -------------------------------------------------
+
+        request_timestamp = time.time()
+
+        _daily_requests.append(
+            request_timestamp
         )
 
-        if response.status_code == 401:
-            _last_error = "توکن TIndex معتبر نیست."
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": _last_error
-            }
+        _last_request_time = request_timestamp
 
-        if response.status_code == 429:
-            _last_error = "محدودیت درخواست TIndex فعال شده است."
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": _last_error,
-                "daily_requests_used": daily_requests_used(),
-                "daily_requests_remaining": daily_requests_remaining()
-            }
+        _next_request_time = (
+            request_timestamp
+            + get_request_interval()
+        )
 
-        response.raise_for_status()
+        # -------------------------------------------------
+        # درخواست فقط به Overview
+        # -------------------------------------------------
 
-        result = response.json()
+        try:
 
-        if not isinstance(result, dict):
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": "پاسخ TIndex معتبر نیست."
-            }
-
-        if result.get("success") is False:
-            message = result.get(
-                "message",
-                "TIndex پاسخ موفقی ارسال نکرد."
+            response = requests.get(
+                OVERVIEW_URL,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT
             )
-            _last_error = str(message)
+
+            # ---------------------------------------------
+            # Unauthorized
+            # ---------------------------------------------
+
+            if response.status_code == 401:
+
+                _last_error = (
+                    "توکن TIndex معتبر نیست."
+                )
+
+                return {
+                    "status": "error",
+                    "source": "tindex.app",
+                    "message": _last_error
+                }
+
+            # ---------------------------------------------
+            # Too Many Requests
+            # ---------------------------------------------
+
+            if response.status_code == 429:
+
+                _last_error = (
+                    "محدودیت درخواست TIndex فعال شده است."
+                )
+
+                return {
+                    "status": "error",
+                    "source": "tindex.app",
+                    "message": _last_error,
+                    "daily_requests_used": (
+                        daily_requests_used()
+                    ),
+                    "daily_requests_remaining": (
+                        daily_requests_remaining()
+                    ),
+                    "retry_after_seconds": (
+                        get_request_interval()
+                    )
+                }
+
+            # ---------------------------------------------
+            # سایر خطاهای HTTP
+            # ---------------------------------------------
+
+            response.raise_for_status()
+
+            # ---------------------------------------------
+            # JSON
+            # ---------------------------------------------
+
+            result = response.json()
+
+            if not isinstance(result, dict):
+
+                _last_error = (
+                    "پاسخ TIndex ساختار معتبر ندارد."
+                )
+
+                return {
+                    "status": "error",
+                    "source": "tindex.app",
+                    "message": _last_error
+                }
+
+            # ---------------------------------------------
+            # Success = false
+            # ---------------------------------------------
+
+            if result.get("success") is False:
+
+                message = result.get(
+                    "message",
+                    "TIndex پاسخ موفقی ارسال نکرد."
+                )
+
+                _last_error = str(message)
+
+                return {
+                    "status": "error",
+                    "source": "tindex.app",
+                    "message": _last_error
+                }
+
+            # ---------------------------------------------
+            # Data
+            # ---------------------------------------------
+
+            data = result.get("data")
+
+            if not isinstance(data, dict):
+
+                _last_error = (
+                    "ساختار data دریافتی از TIndex معتبر نیست."
+                )
+
+                return {
+                    "status": "error",
+                    "source": "tindex.app",
+                    "message": _last_error
+                }
+
+            # ---------------------------------------------
+            # ذخیره کش
+            # ---------------------------------------------
+
+            global _cache_data
+            global _cache_time
+
+            _cache_data = data
+            _cache_time = time.time()
+
+            _last_success_time = (
+                now_tehran().isoformat()
+            )
+
+            _last_error = None
+
+            return {
+                "status": "ok",
+                "source": "tindex.app",
+                "cached": False,
+                "data": data
+            }
+
+        except requests.exceptions.Timeout:
+
+            _last_error = (
+                "اتصال به TIndex بیش از "
+                f"{REQUEST_TIMEOUT} ثانیه طول کشید."
+            )
 
             return {
                 "status": "error",
@@ -153,43 +439,44 @@ def make_tindex_request(url, params=None):
                 "message": _last_error
             }
 
-        _last_error = None
+        except requests.exceptions.RequestException as exc:
 
-        return {
-            "status": "ok",
-            "source": "tindex.app",
-            "data": result.get("data"),
-            "meta": result.get("meta")
-        }
+            _last_error = str(exc)
 
-    except requests.exceptions.RequestException as exc:
-        _last_error = str(exc)
+            return {
+                "status": "error",
+                "source": "tindex.app",
+                "message": (
+                    f"خطا در اتصال به TIndex: {str(exc)}"
+                )
+            }
 
-        return {
-            "status": "error",
-            "source": "tindex.app",
-            "message": f"خطا در اتصال به TIndex: {str(exc)}"
-        }
+        except ValueError:
 
-    except ValueError:
-        _last_error = "پاسخ TIndex JSON معتبر نبود."
+            _last_error = (
+                "پاسخ TIndex JSON معتبر نبود."
+            )
 
-        return {
-            "status": "error",
-            "source": "tindex.app",
-            "message": _last_error
-        }
+            return {
+                "status": "error",
+                "source": "tindex.app",
+                "message": _last_error
+            }
 
 
-def get_overview():
-    global _cache_data
-    global _cache_time
+# =========================================================
+# MARKET DATA
+# =========================================================
 
-    now = time.time()
+def get_market_data(force=False):
 
+    # اگر کش موجود است و زمانش نرسیده
     if (
-        _cache_data is not None
-        and now - _cache_time < CACHE_SECONDS
+        not force
+        and _cache_data is not None
+        and _last_request_time > 0
+        and time.time() - _last_request_time
+        < get_request_interval()
     ):
         return {
             "status": "ok",
@@ -198,187 +485,137 @@ def get_overview():
             "data": _cache_data
         }
 
-    result = make_tindex_request(OVERVIEW_URL)
+    return make_tindex_request(
+        force=force
+    )
 
-    if result["status"] != "ok":
-        return result
 
-    _cache_data = result["data"]
-    _cache_time = time.time()
+# =========================================================
+# STOCK NORMALIZATION
+# =========================================================
+
+def normalize_stock(stock):
 
     return {
-        "status": "ok",
-        "source": "tindex.app",
-        "cached": False,
-        "data": _cache_data
+        "slug": stock.get("slug"),
+        "ticker": stock.get("ticker"),
+        "name": stock.get("name"),
+        "sector": stock.get("sector"),
+        "current_price": stock.get(
+            "last_price"
+        ),
+        "change_percent": stock.get(
+            "change_percent"
+        ),
+        "trade_value": stock.get(
+            "trade_value"
+        ),
+        "trade_volume": stock.get(
+            "trade_volume"
+        ),
+        "market_cap": stock.get(
+            "market_cap"
+        ),
+        "pe": stock.get("pe")
     }
 
 
-def get_full_market(force=False):
-    global _full_market_cache
-    global _full_market_cache_time
-
-    now = time.time()
-
-    if (
-        not force
-        and _full_market_cache is not None
-        and now - _full_market_cache_time < CACHE_SECONDS
-    ):
-        return {
-            "status": "ok",
-            "source": "tindex.app",
-            "cached": True,
-            "stocks": _full_market_cache,
-            "count": len(_full_market_cache)
-        }
-
-    all_stocks = []
-    page = 1
-    last_page = 1
-
-    while True:
-        result = make_tindex_request(
-            STOCKS_URL,
-            params={
-                "page": page,
-                "per_page": PER_PAGE
-            }
-        )
-
-        if result["status"] != "ok":
-            return result
-
-        data = result.get("data")
-
-        if not isinstance(data, dict):
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": "ساختار data بازار معتبر نیست."
-            }
-
-        rows = data.get("rows", [])
-
-        if isinstance(rows, list):
-            all_stocks.extend(rows)
-
-        meta = result.get("meta")
-
-        if not isinstance(meta, dict):
-            meta = {}
-
-        try:
-            last_page = int(
-                safe_number(
-                    meta.get("last_page"),
-                    page
-                )
-            )
-        except (TypeError, ValueError):
-            last_page = page
-
-        has_more = meta.get("has_more")
-
-        if has_more is None:
-            has_more = page < last_page
-
-        if not has_more:
-            break
-
-        page += 1
-
-        if page > 5000:
-            break
-
-    _full_market_cache = all_stocks
-    _full_market_cache_time = time.time()
-
-    return {
-        "status": "ok",
-        "source": "tindex.app",
-        "cached": False,
-        "stocks": all_stocks,
-        "count": len(all_stocks),
-        "page_count": page
-    }
-
-
-def is_valid_stock(stock):
-    if not isinstance(stock, dict):
-        return False
-
-    return bool(stock.get("ticker"))
-
+# =========================================================
+# SCORE
+# =========================================================
 
 def calculate_score(stock):
-    score = 0.0
+
+    score = 0
 
     change = safe_number(
-        stock.get("change"),
-        stock.get("change_percent", 0)
+        stock.get("change_percent")
     )
 
     value = safe_number(
-        stock.get("value"),
-        stock.get("trade_value", 0)
-    )
-
-    volume = safe_number(
-        stock.get("volume"),
-        0
+        stock.get("trade_value")
     )
 
     market_cap = safe_number(
-        stock.get("market_cap"),
-        0
+        stock.get("market_cap")
     )
 
     pe = stock.get("pe")
 
-    if change >= 3:
+    # ---------------------------------------------
+    # Momentum
+    # ---------------------------------------------
+
+    if change >= 4:
+        score += 25
+
+    elif change >= 3:
         score += 20
+
     elif change >= 2:
         score += 15
+
     elif change >= 1:
         score += 8
+
     elif change > 0:
         score += 4
+
     elif change <= -3:
         score -= 15
+
     elif change <= -2:
         score -= 10
 
-    if value >= 10_000_000_000_000:
+    # ---------------------------------------------
+    # Trade Value
+    # ---------------------------------------------
+
+    if value >= 20_000_000_000_000:
+        score += 25
+
+    elif value >= 10_000_000_000_000:
         score += 20
+
     elif value >= 5_000_000_000_000:
         score += 15
+
     elif value >= 1_000_000_000_000:
         score += 10
+
     elif value >= 100_000_000_000:
         score += 5
 
-    if volume >= 1_000_000_000:
-        score += 10
-    elif volume >= 100_000_000:
-        score += 6
-    elif volume >= 10_000_000:
-        score += 3
+    # ---------------------------------------------
+    # Market Cap
+    # ---------------------------------------------
 
     if market_cap > 0:
         score += 5
 
+    # ---------------------------------------------
+    # P/E
+    # ---------------------------------------------
+
     if pe is not None:
-        pe_value = safe_number(pe, 0)
+
+        pe_value = safe_number(
+            pe,
+            0
+        )
 
         if 0 < pe_value <= 6:
             score += 15
+
         elif 6 < pe_value <= 10:
             score += 10
+
         elif 10 < pe_value <= 15:
             score += 5
+
         elif pe_value > 30:
             score -= 8
+
         elif pe_value < 0:
             score -= 5
 
@@ -392,343 +629,706 @@ def calculate_score(stock):
 
 
 def build_reasons(stock):
+
     reasons = []
 
     change = safe_number(
-        stock.get("change"),
-        stock.get("change_percent", 0)
+        stock.get("change_percent")
     )
 
     value = safe_number(
-        stock.get("value"),
-        stock.get("trade_value", 0)
+        stock.get("trade_value")
     )
 
     pe = stock.get("pe")
 
-    if change >= 2:
-        reasons.append("مومنتوم روزانه مثبت")
+    if change >= 3:
+        reasons.append(
+            "مومنتوم روزانه مثبت"
+        )
+
     elif change > 0:
-        reasons.append("تغییر روزانه مثبت")
-    elif change < -2:
-        reasons.append("فشار فروش روزانه")
+        reasons.append(
+            "تغییر روزانه مثبت"
+        )
+
+    elif change <= -2:
+        reasons.append(
+            "فشار فروش روزانه"
+        )
 
     if value >= 10_000_000_000_000:
-        reasons.append("ارزش معاملات بسیار بالا")
+        reasons.append(
+            "ارزش معاملات بسیار بالا"
+        )
+
     elif value >= 1_000_000_000_000:
-        reasons.append("نقدشوندگی مناسب")
+        reasons.append(
+            "نقدشوندگی مناسب"
+        )
 
     if pe is not None:
-        pe_value = safe_number(pe, 0)
+
+        pe_value = safe_number(
+            pe,
+            0
+        )
 
         if 0 < pe_value <= 10:
-            reasons.append("P/E نسبتاً مناسب")
+            reasons.append(
+                "P/E نسبتاً مناسب"
+            )
+
         elif pe_value > 30:
-            reasons.append("P/E بالا")
+            reasons.append(
+                "P/E بالا"
+            )
 
     if not reasons:
-        reasons.append("نیازمند بررسی عمیق‌تر")
+        reasons.append(
+            "نیازمند بررسی عمیق‌تر"
+        )
 
     return reasons
 
 
-def normalize_stock(stock):
-    return {
-        "slug": stock.get("slug"),
-        "ticker": stock.get("ticker"),
-        "name": stock.get("name"),
-        "sector": stock.get("sector"),
-        "current_price": stock.get(
-            "last_price",
-            stock.get("current_price")
-        ),
-        "closing_price": stock.get("closing_price"),
-        "change_percent": stock.get(
-            "change",
-            stock.get("change_percent")
-        ),
-        "closing_change_percent": stock.get(
-            "closing_change"
-        ),
-        "volume": stock.get("volume"),
-        "trade_value": stock.get(
-            "value",
-            stock.get("trade_value")
-        ),
-        "market_cap": stock.get("market_cap"),
-        "pe": stock.get("pe"),
-        "updated_at": stock.get("updated_at"),
-        "score": calculate_score(stock),
-        "reasons": build_reasons(stock)
-    }
+def prepare_stock(stock):
+
+    item = normalize_stock(
+        stock
+    )
+
+    item["score"] = calculate_score(
+        stock
+    )
+
+    item["reasons"] = build_reasons(
+        stock
+    )
+
+    return item
 
 
-def analyze_full_market(stocks):
-    candidates = []
+# =========================================================
+# ANALYSIS FROM TINDEX OVERVIEW
+# =========================================================
 
-    for stock in stocks:
-        if not is_valid_stock(stock):
+def analyze_overview(data):
+
+    boards = data.get(
+        "boards",
+        {}
+    )
+
+    if not isinstance(boards, dict):
+        boards = {}
+
+    gainers = boards.get(
+        "gainers",
+        []
+    )
+
+    losers = boards.get(
+        "losers",
+        []
+    )
+
+    most_active_value = boards.get(
+        "most_active_value",
+        []
+    )
+
+    most_active_volume = boards.get(
+        "most_active_volume",
+        []
+    )
+
+    # ---------------------------------------------
+    # Combine all available symbols
+    # ---------------------------------------------
+
+    combined = {}
+
+    for collection in [
+        gainers,
+        losers,
+        most_active_value,
+        most_active_volume
+    ]:
+
+        if not isinstance(collection, list):
             continue
 
-        candidates.append(
-            normalize_stock(stock)
+        for stock in collection:
+
+            if not isinstance(stock, dict):
+                continue
+
+            ticker = stock.get(
+                "ticker"
+            )
+
+            if ticker:
+                combined[ticker] = stock
+
+    candidates = []
+
+    for stock in combined.values():
+
+        item = prepare_stock(
+            stock
         )
+
+        candidates.append(
+            item
+        )
+
+    # ---------------------------------------------
+    # Short term
+    # ---------------------------------------------
 
     short_term = sorted(
         candidates,
         key=lambda x: (
-            x["score"],
-            safe_number(x["trade_value"]),
-            safe_number(x["change_percent"])
+            safe_number(
+                x.get("score")
+            ),
+            safe_number(
+                x.get("trade_value")
+            ),
+            safe_number(
+                x.get("change_percent")
+            )
         ),
         reverse=True
     )
+
+    # ---------------------------------------------
+    # Six month
+    # ---------------------------------------------
 
     six_month = sorted(
         candidates,
         key=lambda x: (
-            x["score"],
-            safe_number(x["market_cap"]),
-            safe_number(x["trade_value"])
+            safe_number(
+                x.get("score")
+            ),
+            safe_number(
+                x.get("market_cap")
+            ),
+            safe_number(
+                x.get("trade_value")
+            )
         ),
         reverse=True
     )
 
-    gainers = sorted(
+    # ---------------------------------------------
+    # Gainers
+    # ---------------------------------------------
+
+    top_gainers = sorted(
         candidates,
         key=lambda x: safe_number(
-            x["change_percent"]
+            x.get("change_percent")
         ),
         reverse=True
     )
 
-    losers = sorted(
+    # ---------------------------------------------
+    # Losers
+    # ---------------------------------------------
+
+    top_losers = sorted(
         candidates,
         key=lambda x: safe_number(
-            x["change_percent"]
+            x.get("change_percent")
         )
     )
+
+    # ---------------------------------------------
+    # Most active
+    # ---------------------------------------------
 
     most_active = sorted(
         candidates,
         key=lambda x: safe_number(
-            x["trade_value"]
+            x.get("trade_value")
         ),
         reverse=True
     )
 
     return {
-        "candidate_count": len(candidates),
+        "candidate_count": len(
+            candidates
+        ),
         "short_term_top_20": short_term[:20],
         "six_month_top_20": six_month[:20],
-        "top_gainers": gainers[:20],
-        "top_losers": losers[:20],
+        "top_gainers": top_gainers[:20],
+        "top_losers": top_losers[:20],
         "most_active": most_active[:20]
     }
 
 
+# =========================================================
+# ROOT
+# =========================================================
+
 @app.get("/")
 def root():
+
     return {
         "status": "ok",
         "message": "Shkar Bourse API is running",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "source": "tindex.app"
     }
 
 
+# =========================================================
+# HEALTH
+# =========================================================
+
 @app.get("/health")
 def health():
+
     return {
         "status": "healthy",
         "source": "tindex.app",
-        "version": "6.0.0",
-        "overview_cached": _cache_data is not None,
-        "full_market_cached": _full_market_cache is not None,
-        "cached_stocks": (
-            len(_full_market_cache)
-            if isinstance(_full_market_cache, list)
-            else 0
+        "version": "7.0.0",
+
+        "market_open": is_market_open(),
+
+        "request_interval_seconds": (
+            get_request_interval()
         ),
-        "daily_requests_used": daily_requests_used(),
-        "daily_requests_remaining_local": (
+
+        "seconds_until_next_request": (
+            seconds_until_next_request()
+        ),
+
+        "cache_available": (
+            _cache_data is not None
+        ),
+
+        "last_request_time": (
+            _last_request_time
+            if _last_request_time > 0
+            else None
+        ),
+
+        "last_success_time": (
+            _last_success_time
+        ),
+
+        "daily_requests_used": (
+            daily_requests_used()
+        ),
+
+        "daily_requests_remaining": (
             daily_requests_remaining()
         ),
+
         "last_error": _last_error
     }
 
 
+# =========================================================
+# MARKET
+# =========================================================
+
 @app.get("/market")
 def market():
-    return get_overview()
 
+    return get_market_data()
+
+
+# =========================================================
+# FULL MARKET
+# =========================================================
 
 @app.get("/full-market")
 def full_market():
-    result = get_full_market()
+
+    result = get_market_data()
 
     if result["status"] != "ok":
         return result
 
+    data = result["data"]
+
+    breadth = data.get(
+        "breadth",
+        {}
+    )
+
+    totals = data.get(
+        "totals",
+        {}
+    )
+
+    flow = data.get(
+        "flow",
+        {}
+    )
+
     return {
         "status": "ok",
         "source": "tindex.app",
-        "cached": result.get("cached", False),
-        "count": result["count"],
-        "stocks": result["stocks"],
-        "daily_requests_used": daily_requests_used(),
+        "cached": result.get(
+            "cached",
+            False
+        ),
+
+        "market_date": data.get(
+            "as_of"
+        ),
+
+        "symbols": (
+            breadth.get(
+                "total_symbols"
+            )
+            if isinstance(
+                breadth,
+                dict
+            )
+            else None
+        ),
+
+        "quoted_symbols": (
+            breadth.get(
+                "quoted_symbols"
+            )
+            if isinstance(
+                breadth,
+                dict
+            )
+            else None
+        ),
+
+        "breadth": breadth,
+        "totals": totals,
+        "flow": flow,
+
+        "boards": data.get(
+            "boards",
+            {}
+        ),
+
+        "sectors": data.get(
+            "sectors",
+            []
+        ),
+
+        "options": data.get(
+            "options",
+            {}
+        ),
+
+        "fear_greed": data.get(
+            "fear_greed"
+        ),
+
+        "daily_requests_used": (
+            daily_requests_used()
+        ),
+
         "daily_requests_remaining": (
             daily_requests_remaining()
+        ),
+
+        "seconds_until_next_request": (
+            seconds_until_next_request()
         )
     }
 
+
+# =========================================================
+# FULL ANALYSIS
+# =========================================================
 
 @app.get("/full-analysis")
 def full_analysis():
-    result = get_full_market()
+
+    result = get_market_data()
 
     if result["status"] != "ok":
         return result
 
-    analysis = analyze_full_market(
-        result["stocks"]
+    data = result["data"]
+
+    analysis = analyze_overview(
+        data
+    )
+
+    flow = data.get(
+        "flow",
+        {}
+    )
+
+    breadth = data.get(
+        "breadth",
+        {}
+    )
+
+    fear_greed = data.get(
+        "fear_greed"
     )
 
     return {
         "status": "ok",
         "source": "tindex.app",
-        "cached": result.get("cached", False),
-        "market_date": (
-            _cache_data.get("as_of")
-            if isinstance(_cache_data, dict)
-            else None
+
+        "cached": result.get(
+            "cached",
+            False
         ),
+
+        "market_date": data.get(
+            "as_of"
+        ),
+
         "analysis": analysis,
-        "warning": (
-            "این رتبه‌بندی نسخه اولیه موتور تحلیل است "
-            "و به معنی تضمین سود نیست."
+
+        "market_context": {
+            "breadth": breadth,
+            "flow": flow,
+            "fear_greed": fear_greed,
+            "options": data.get(
+                "options",
+                {}
+            )
+        },
+
+        "sectors": data.get(
+            "sectors",
+            []
         ),
-        "daily_requests_used": daily_requests_used(),
+
+        "warning": (
+            "این رتبه‌بندی نسخه اولیه "
+            "موتور تحلیل است و به معنی "
+            "تضمین سود نیست."
+        ),
+
+        "daily_requests_used": (
+            daily_requests_used()
+        ),
+
         "daily_requests_remaining": (
             daily_requests_remaining()
+        ),
+
+        "request_interval_seconds": (
+            get_request_interval()
+        ),
+
+        "seconds_until_next_request": (
+            seconds_until_next_request()
         )
     }
 
+
+# =========================================================
+# SHORT TERM
+# =========================================================
 
 @app.get("/short-term-opportunities")
 def short_term_opportunities():
-    result = get_full_market()
+
+    result = get_market_data()
 
     if result["status"] != "ok":
         return result
 
-    analysis = analyze_full_market(
-        result["stocks"]
+    analysis = analyze_overview(
+        result["data"]
     )
 
     opportunities = []
 
     for rank, stock in enumerate(
-        analysis["short_term_top_20"][:10],
+        analysis[
+            "short_term_top_20"
+        ][:10],
         start=1
     ):
+
         opportunities.append({
             "rank": rank,
-            "score": stock["score"],
-            "ticker": stock["ticker"],
-            "name": stock["name"],
-            "sector": stock["sector"],
-            "current_price": stock["current_price"],
-            "change_percent": stock["change_percent"],
-            "trade_value": stock["trade_value"],
-            "market_cap": stock["market_cap"],
-            "pe": stock["pe"],
-            "reasons": stock["reasons"]
+            **stock
         })
 
     return {
         "status": "ok",
         "source": "tindex.app",
-        "section": "short_term_opportunities",
-        "title": "۱۰ فرصت برتر کوتاه‌مدت",
-        "count": len(opportunities),
+        "section": (
+            "short_term_opportunities"
+        ),
+        "title": (
+            "۱۰ فرصت برتر کوتاه‌مدت"
+        ),
+        "count": len(
+            opportunities
+        ),
         "opportunities": opportunities,
+
         "warning": (
-            "این رتبه‌بندی سیگنال اولیه است "
-            "و سود تضمینی نیست."
+            "این رتبه‌بندی سیگنال "
+            "اولیه است و سود تضمینی نیست."
         )
     }
 
+
+# =========================================================
+# SIX MONTH
+# =========================================================
 
 @app.get("/six-month-opportunities")
 def six_month_opportunities():
-    result = get_full_market()
+
+    result = get_market_data()
 
     if result["status"] != "ok":
         return result
 
-    analysis = analyze_full_market(
-        result["stocks"]
+    analysis = analyze_overview(
+        result["data"]
     )
 
     opportunities = []
 
     for rank, stock in enumerate(
-        analysis["six_month_top_20"][:10],
+        analysis[
+            "six_month_top_20"
+        ][:10],
         start=1
     ):
+
         opportunities.append({
             "rank": rank,
-            "score": stock["score"],
-            "ticker": stock["ticker"],
-            "name": stock["name"],
-            "sector": stock["sector"],
-            "current_price": stock["current_price"],
-            "change_percent": stock["change_percent"],
-            "trade_value": stock["trade_value"],
-            "market_cap": stock["market_cap"],
-            "pe": stock["pe"],
-            "reasons": stock["reasons"]
+            **stock
         })
 
     return {
         "status": "ok",
         "source": "tindex.app",
-        "section": "six_month_opportunities",
-        "title": "۱۰ فرصت برتر ۶ ماهه",
-        "count": len(opportunities),
+        "section": (
+            "six_month_opportunities"
+        ),
+        "title": (
+            "۱۰ فرصت برتر ۶ ماهه"
+        ),
+        "count": len(
+            opportunities
+        ),
         "opportunities": opportunities,
+
         "warning": (
-            "این رتبه‌بندی نسخه اولیه است "
-            "و سود تضمینی نیست."
+            "این رتبه‌بندی نسخه اولیه "
+            "است و سود تضمینی نیست."
         )
     }
 
 
+# =========================================================
+# SCANNER
+# =========================================================
+
 @app.get("/scanner/step")
 def scanner_step():
-    result = get_full_market()
+
+    result = get_market_data()
 
     if result["status"] != "ok":
         return result
 
-    stocks = result["stocks"]
-    analysis = analyze_full_market(stocks)
+    data = result["data"]
+
+    analysis = analyze_overview(
+        data
+    )
 
     return {
         "status": "ok",
         "source": "tindex.app",
-        "message": "اسکن کامل بازار با موفقیت انجام شد.",
-        "total_stocks": len(stocks),
-        "top_gainers": analysis["top_gainers"][:10],
-        "top_losers": analysis["top_losers"][:10],
-        "most_active": analysis["most_active"][:10],
-        "next_step": (
-            "مرحله بعد: اضافه کردن تحلیل جریان پول حقیقی، "
-            "صف خرید و فروش، روند تاریخی و امتیاز ریسک."
+
+        "message": (
+            "اسکن بازار با یک درخواست "
+            "Overview با موفقیت انجام شد."
         ),
-        "daily_requests_used": daily_requests_used(),
+
+        "market_date": data.get(
+            "as_of"
+        ),
+
+        "total_symbols": (
+            data.get(
+                "breadth",
+                {}
+            ).get(
+                "total_symbols"
+            )
+            if isinstance(
+                data.get(
+                    "breadth"
+                ),
+                dict
+            )
+            else None
+        ),
+
+        "quoted_symbols": (
+            data.get(
+                "breadth",
+                {}
+            ).get(
+                "quoted_symbols"
+            )
+            if isinstance(
+                data.get(
+                    "breadth"
+                ),
+                dict
+            )
+            else None
+        ),
+
+        "top_gainers": analysis[
+            "top_gainers"
+        ][:10],
+
+        "top_losers": analysis[
+            "top_losers"
+        ][:10],
+
+        "most_active": analysis[
+            "most_active"
+        ][:10],
+
+        "flow": data.get(
+            "flow",
+            {}
+        ),
+
+        "fear_greed": data.get(
+            "fear_greed"
+        ),
+
+        "options": data.get(
+            "options",
+            {}
+        ),
+
+        "daily_requests_used": (
+            daily_requests_used()
+        ),
+
         "daily_requests_remaining": (
             daily_requests_remaining()
+        ),
+
+        "seconds_until_next_request": (
+            seconds_until_next_request()
         )
     }
