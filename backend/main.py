@@ -5,31 +5,29 @@ from fastapi import FastAPI
 
 app = FastAPI(
     title="Shkar Bourse API",
-    version="5.0.0"
+    version="6.0.0"
 )
 
-TINDEX_OVERVIEW_URL = "https://tindex.app/api/public/stock-market/overview"
+TINDEX_BASE_URL = "https://tindex.app/api/public"
+OVERVIEW_URL = f"{TINDEX_BASE_URL}/stock-market/overview"
+STOCKS_URL = f"{TINDEX_BASE_URL}/stocks/by-category/stock-energy"
 
 CACHE_SECONDS = 60
 DAILY_LIMIT = 100
+PER_PAGE = 100
 
 _cache_data = None
 _cache_time = 0.0
+_full_market_cache = None
+_full_market_cache_time = 0.0
 
 _daily_requests = []
 _last_error = None
 
 
-# =========================
-# Rate Limit
-# =========================
-
 def cleanup_daily_requests():
     global _daily_requests
-
-    now = time.time()
-    cutoff = now - 86400
-
+    cutoff = time.time() - 86400
     _daily_requests = [
         t for t in _daily_requests
         if t > cutoff
@@ -54,35 +52,38 @@ def can_request_tindex():
     if len(_daily_requests) >= DAILY_LIMIT:
         return False, "سقف 100 درخواست در 24 ساعت مصرف شده است."
 
-    if _daily_requests:
-        elapsed = time.time() - _daily_requests[-1]
-
-        if elapsed < CACHE_SECONDS:
-            remaining = int(CACHE_SECONDS - elapsed) + 1
-
-            return False, (
-                f"برای درخواست بعدی باید {remaining} ثانیه صبر کنید."
-            )
-
     return True, None
 
 
-# =========================
-# TIndex Request
-# =========================
-
-def get_token():
-    return os.getenv("TINDEX_TOKEN", "").strip()
-
-
-def request_tindex():
-    global _last_error
-
-    token = get_token()
+def get_headers():
+    token = os.getenv("TINDEX_TOKEN", "").strip()
 
     if not token:
-        _last_error = "TINDEX_TOKEN تنظیم نشده است."
+        return None
 
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "ShkarBoursePro2/6.0"
+    }
+
+
+def safe_number(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def make_tindex_request(url, params=None):
+    global _last_error
+
+    headers = get_headers()
+
+    if headers is None:
+        _last_error = "TINDEX_TOKEN تنظیم نشده است."
         return {
             "status": "error",
             "source": "tindex.app",
@@ -100,24 +101,18 @@ def request_tindex():
             "daily_requests_remaining": daily_requests_remaining()
         }
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "ShkarBoursePro2/5.0"
-    }
-
     _daily_requests.append(time.time())
 
     try:
         response = requests.get(
-            TINDEX_OVERVIEW_URL,
+            url,
             headers=headers,
+            params=params,
             timeout=30
         )
 
         if response.status_code == 401:
             _last_error = "توکن TIndex معتبر نیست."
-
             return {
                 "status": "error",
                 "source": "tindex.app",
@@ -126,7 +121,6 @@ def request_tindex():
 
         if response.status_code == 429:
             _last_error = "محدودیت درخواست TIndex فعال شده است."
-
             return {
                 "status": "error",
                 "source": "tindex.app",
@@ -140,12 +134,10 @@ def request_tindex():
         result = response.json()
 
         if not isinstance(result, dict):
-            _last_error = "پاسخ TIndex ساختار معتبر ندارد."
-
             return {
                 "status": "error",
                 "source": "tindex.app",
-                "message": _last_error
+                "message": "پاسخ TIndex معتبر نیست."
             }
 
         if result.get("success") is False:
@@ -153,19 +145,7 @@ def request_tindex():
                 "message",
                 "TIndex پاسخ موفقی ارسال نکرد."
             )
-
             _last_error = str(message)
-
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": _last_error
-            }
-
-        data = result.get("data")
-
-        if not isinstance(data, dict):
-            _last_error = "داده بازار در پاسخ TIndex پیدا نشد."
 
             return {
                 "status": "error",
@@ -178,21 +158,17 @@ def request_tindex():
         return {
             "status": "ok",
             "source": "tindex.app",
-            "cached": False,
-            "data": data,
-            "daily_requests_used": daily_requests_used(),
-            "daily_requests_remaining": daily_requests_remaining()
+            "data": result.get("data"),
+            "meta": result.get("meta")
         }
 
-    except requests.exceptions.RequestException as e:
-        _last_error = str(e)
+    except requests.exceptions.RequestException as exc:
+        _last_error = str(exc)
 
         return {
             "status": "error",
             "source": "tindex.app",
-            "message": f"خطا در اتصال به TIndex: {str(e)}",
-            "daily_requests_used": daily_requests_used(),
-            "daily_requests_remaining": daily_requests_remaining()
+            "message": f"خطا در اتصال به TIndex: {str(exc)}"
         }
 
     except ValueError:
@@ -205,11 +181,7 @@ def request_tindex():
         }
 
 
-# =========================
-# Market Cache
-# =========================
-
-def get_tindex_overview():
+def get_overview():
     global _cache_data
     global _cache_time
 
@@ -217,18 +189,16 @@ def get_tindex_overview():
 
     if (
         _cache_data is not None
-        and (now - _cache_time) < CACHE_SECONDS
+        and now - _cache_time < CACHE_SECONDS
     ):
         return {
             "status": "ok",
             "source": "tindex.app",
             "cached": True,
-            "data": _cache_data,
-            "daily_requests_used": daily_requests_used(),
-            "daily_requests_remaining": daily_requests_remaining()
+            "data": _cache_data
         }
 
-    result = request_tindex()
+    result = make_tindex_request(OVERVIEW_URL)
 
     if result["status"] != "ok":
         return result
@@ -240,57 +210,132 @@ def get_tindex_overview():
         "status": "ok",
         "source": "tindex.app",
         "cached": False,
-        "data": _cache_data,
-        "daily_requests_used": daily_requests_used(),
-        "daily_requests_remaining": daily_requests_remaining()
+        "data": _cache_data
     }
 
 
-# =========================
-# Helpers
-# =========================
+def get_full_market(force=False):
+    global _full_market_cache
+    global _full_market_cache_time
 
-def safe_number(value, default=0.0):
-    try:
-        if value is None:
-            return default
+    now = time.time()
 
-        return float(value)
+    if (
+        not force
+        and _full_market_cache is not None
+        and now - _full_market_cache_time < CACHE_SECONDS
+    ):
+        return {
+            "status": "ok",
+            "source": "tindex.app",
+            "cached": True,
+            "stocks": _full_market_cache,
+            "count": len(_full_market_cache)
+        }
 
-    except (TypeError, ValueError):
-        return default
+    all_stocks = []
+    page = 1
+    last_page = 1
+
+    while True:
+        result = make_tindex_request(
+            STOCKS_URL,
+            params={
+                "page": page,
+                "per_page": PER_PAGE
+            }
+        )
+
+        if result["status"] != "ok":
+            return result
+
+        data = result.get("data")
+
+        if not isinstance(data, dict):
+            return {
+                "status": "error",
+                "source": "tindex.app",
+                "message": "ساختار data بازار معتبر نیست."
+            }
+
+        rows = data.get("rows", [])
+
+        if isinstance(rows, list):
+            all_stocks.extend(rows)
+
+        meta = result.get("meta")
+
+        if not isinstance(meta, dict):
+            meta = {}
+
+        try:
+            last_page = int(
+                safe_number(
+                    meta.get("last_page"),
+                    page
+                )
+            )
+        except (TypeError, ValueError):
+            last_page = page
+
+        has_more = meta.get("has_more")
+
+        if has_more is None:
+            has_more = page < last_page
+
+        if not has_more:
+            break
+
+        page += 1
+
+        if page > 5000:
+            break
+
+    _full_market_cache = all_stocks
+    _full_market_cache_time = time.time()
+
+    return {
+        "status": "ok",
+        "source": "tindex.app",
+        "cached": False,
+        "stocks": all_stocks,
+        "count": len(all_stocks),
+        "page_count": page
+    }
 
 
-def get_boards(data):
-    if not isinstance(data, dict):
-        return {}
+def is_valid_stock(stock):
+    if not isinstance(stock, dict):
+        return False
 
-    boards = data.get("boards", {})
-
-    if not isinstance(boards, dict):
-        return {}
-
-    return boards
+    return bool(stock.get("ticker"))
 
 
-# =========================
-# Scoring
-# =========================
-
-def calculate_short_term_score(stock):
-    score = 0
+def calculate_score(stock):
+    score = 0.0
 
     change = safe_number(
-        stock.get("change_percent")
+        stock.get("change"),
+        stock.get("change_percent", 0)
     )
 
-    trade_value = safe_number(
-        stock.get("trade_value")
+    value = safe_number(
+        stock.get("value"),
+        stock.get("trade_value", 0)
+    )
+
+    volume = safe_number(
+        stock.get("volume"),
+        0
+    )
+
+    market_cap = safe_number(
+        stock.get("market_cap"),
+        0
     )
 
     pe = stock.get("pe")
 
-    # Momentum
     if change >= 3:
         score += 20
     elif change >= 2:
@@ -299,99 +344,64 @@ def calculate_short_term_score(stock):
         score += 8
     elif change > 0:
         score += 4
-    elif change < -3:
+    elif change <= -3:
         score -= 15
-    elif change < -2:
+    elif change <= -2:
         score -= 10
 
-    # Liquidity
-    if trade_value >= 10_000_000_000_000:
+    if value >= 10_000_000_000_000:
         score += 20
-    elif trade_value >= 5_000_000_000_000:
+    elif value >= 5_000_000_000_000:
         score += 15
-    elif trade_value >= 1_000_000_000_000:
+    elif value >= 1_000_000_000_000:
         score += 10
-    elif trade_value >= 100_000_000_000:
+    elif value >= 100_000_000_000:
         score += 5
 
-    # P/E
+    if volume >= 1_000_000_000:
+        score += 10
+    elif volume >= 100_000_000:
+        score += 6
+    elif volume >= 10_000_000:
+        score += 3
+
+    if market_cap > 0:
+        score += 5
+
     if pe is not None:
-        pe_value = safe_number(pe)
+        pe_value = safe_number(pe, 0)
 
         if 0 < pe_value <= 6:
             score += 15
         elif 6 < pe_value <= 10:
             score += 10
         elif 10 < pe_value <= 15:
-            score += 4
+            score += 5
         elif pe_value > 30:
             score -= 8
         elif pe_value < 0:
             score -= 5
 
-    return max(0, min(100, round(score)))
-
-
-def calculate_six_month_score(stock):
-    score = 0
-
-    change = safe_number(
-        stock.get("change_percent")
+    return max(
+        0,
+        min(
+            100,
+            round(score)
+        )
     )
-
-    trade_value = safe_number(
-        stock.get("trade_value")
-    )
-
-    pe = stock.get("pe")
-
-    # Liquidity
-    if trade_value >= 10_000_000_000_000:
-        score += 25
-    elif trade_value >= 5_000_000_000_000:
-        score += 20
-    elif trade_value >= 1_000_000_000_000:
-        score += 14
-    elif trade_value >= 100_000_000_000:
-        score += 7
-
-    # Momentum
-    if change >= 3:
-        score += 15
-    elif change >= 2:
-        score += 12
-    elif change >= 1:
-        score += 8
-    elif change > 0:
-        score += 4
-
-    # P/E
-    if pe is not None:
-        pe_value = safe_number(pe)
-
-        if 0 < pe_value <= 6:
-            score += 20
-        elif 6 < pe_value <= 10:
-            score += 15
-        elif 10 < pe_value <= 15:
-            score += 8
-        elif pe_value > 30:
-            score -= 10
-        elif pe_value < 0:
-            score -= 8
-
-    return max(0, min(100, round(score)))
 
 
 def build_reasons(stock):
     reasons = []
 
     change = safe_number(
-        stock.get("change_percent")
+        stock.get("change"),
+        stock.get("change_percent", 0)
     )
 
-    trade_value = safe_number(
-        stock.get("trade_value")
+    value = safe_number(
+        stock.get("value"),
+        stock.get("trade_value", 0)
     )
 
     pe = stock.get("pe")
@@ -400,14 +410,16 @@ def build_reasons(stock):
         reasons.append("مومنتوم روزانه مثبت")
     elif change > 0:
         reasons.append("تغییر روزانه مثبت")
+    elif change < -2:
+        reasons.append("فشار فروش روزانه")
 
-    if trade_value >= 10_000_000_000_000:
+    if value >= 10_000_000_000_000:
         reasons.append("ارزش معاملات بسیار بالا")
-    elif trade_value >= 1_000_000_000_000:
+    elif value >= 1_000_000_000_000:
         reasons.append("نقدشوندگی مناسب")
 
     if pe is not None:
-        pe_value = safe_number(pe)
+        pe_value = safe_number(pe, 0)
 
         if 0 < pe_value <= 10:
             reasons.append("P/E نسبتاً مناسب")
@@ -420,170 +432,216 @@ def build_reasons(stock):
     return reasons
 
 
-# =========================
-# Market Analysis
-# =========================
-
-def analyze_market(data):
-    boards = get_boards(data)
-
-    candidates = []
-    seen = set()
-
-    board_names = [
-        "gainers",
-        "losers",
-        "most_active_value",
-        "most_active_volume"
-    ]
-
-    for board_name in board_names:
-        rows = boards.get(board_name, [])
-
-        if not isinstance(rows, list):
-            continue
-
-        for stock in rows:
-            if not isinstance(stock, dict):
-                continue
-
-            ticker = stock.get("ticker")
-
-            if not ticker:
-                continue
-
-            if ticker in seen:
-                continue
-
-            seen.add(ticker)
-
-            candidates.append({
-                "ticker": ticker,
-                "name": stock.get("name", "---"),
-                "sector": stock.get("sector", "---"),
-                "current_price": stock.get("last_price", 0),
-                "change_percent": stock.get("change_percent", 0),
-                "trade_value": stock.get("trade_value", 0),
-                "pe": stock.get("pe"),
-                "short_term_score": calculate_short_term_score(stock),
-                "six_month_score": calculate_six_month_score(stock),
-                "reasons": build_reasons(stock)
-            })
-
-    short_term = sorted(
-        candidates,
-        key=lambda x: x["short_term_score"],
-        reverse=True
-    )[:3]
-
-    six_month = sorted(
-        candidates,
-        key=lambda x: x["six_month_score"],
-        reverse=True
-    )[:10]
-
+def normalize_stock(stock):
     return {
-        "short_term_top_3": short_term,
-        "six_month_top_10": six_month,
-        "candidate_count": len(candidates)
+        "slug": stock.get("slug"),
+        "ticker": stock.get("ticker"),
+        "name": stock.get("name"),
+        "sector": stock.get("sector"),
+        "current_price": stock.get(
+            "last_price",
+            stock.get("current_price")
+        ),
+        "closing_price": stock.get("closing_price"),
+        "change_percent": stock.get(
+            "change",
+            stock.get("change_percent")
+        ),
+        "closing_change_percent": stock.get(
+            "closing_change"
+        ),
+        "volume": stock.get("volume"),
+        "trade_value": stock.get(
+            "value",
+            stock.get("trade_value")
+        ),
+        "market_cap": stock.get("market_cap"),
+        "pe": stock.get("pe"),
+        "updated_at": stock.get("updated_at"),
+        "score": calculate_score(stock),
+        "reasons": build_reasons(stock)
     }
 
 
-# =========================
-# Routes
-# =========================
+def analyze_full_market(stocks):
+    candidates = []
+
+    for stock in stocks:
+        if not is_valid_stock(stock):
+            continue
+
+        candidates.append(
+            normalize_stock(stock)
+        )
+
+    short_term = sorted(
+        candidates,
+        key=lambda x: (
+            x["score"],
+            safe_number(x["trade_value"]),
+            safe_number(x["change_percent"])
+        ),
+        reverse=True
+    )
+
+    six_month = sorted(
+        candidates,
+        key=lambda x: (
+            x["score"],
+            safe_number(x["market_cap"]),
+            safe_number(x["trade_value"])
+        ),
+        reverse=True
+    )
+
+    gainers = sorted(
+        candidates,
+        key=lambda x: safe_number(
+            x["change_percent"]
+        ),
+        reverse=True
+    )
+
+    losers = sorted(
+        candidates,
+        key=lambda x: safe_number(
+            x["change_percent"]
+        )
+    )
+
+    most_active = sorted(
+        candidates,
+        key=lambda x: safe_number(
+            x["trade_value"]
+        ),
+        reverse=True
+    )
+
+    return {
+        "candidate_count": len(candidates),
+        "short_term_top_20": short_term[:20],
+        "six_month_top_20": six_month[:20],
+        "top_gainers": gainers[:20],
+        "top_losers": losers[:20],
+        "most_active": most_active[:20]
+    }
+
 
 @app.get("/")
 def root():
     return {
         "status": "ok",
         "message": "Shkar Bourse API is running",
-        "version": "5.0.0",
+        "version": "6.0.0",
         "source": "tindex.app"
     }
 
 
 @app.get("/health")
 def health():
-    cached_stocks = 0
-
-    if isinstance(_cache_data, dict):
-        boards = get_boards(_cache_data)
-
-        for rows in boards.values():
-            if isinstance(rows, list):
-                cached_stocks += len(rows)
-
-    total_symbols = None
-
-    if isinstance(_cache_data, dict):
-        breadth = _cache_data.get("breadth", {})
-
-        if isinstance(breadth, dict):
-            total_symbols = breadth.get("total")
-
     return {
         "status": "healthy",
         "source": "tindex.app",
-        "cached_stocks": cached_stocks,
-        "total_symbols": total_symbols,
+        "version": "6.0.0",
+        "overview_cached": _cache_data is not None,
+        "full_market_cached": _full_market_cache is not None,
+        "cached_stocks": (
+            len(_full_market_cache)
+            if isinstance(_full_market_cache, list)
+            else 0
+        ),
         "daily_requests_used": daily_requests_used(),
-        "daily_requests_remaining_local": daily_requests_remaining(),
+        "daily_requests_remaining_local": (
+            daily_requests_remaining()
+        ),
         "last_error": _last_error
     }
 
 
 @app.get("/market")
 def market():
-    return get_tindex_overview()
+    return get_overview()
 
 
-@app.get("/analysis")
-def analysis():
-    result = get_tindex_overview()
+@app.get("/full-market")
+def full_market():
+    result = get_full_market()
 
     if result["status"] != "ok":
         return result
-
-    data = result["data"]
 
     return {
         "status": "ok",
         "source": "tindex.app",
         "cached": result.get("cached", False),
-        "market_date": data.get("as_of"),
-        "analysis": analyze_market(data),
+        "count": result["count"],
+        "stocks": result["stocks"],
+        "daily_requests_used": daily_requests_used(),
+        "daily_requests_remaining": (
+            daily_requests_remaining()
+        )
+    }
+
+
+@app.get("/full-analysis")
+def full_analysis():
+    result = get_full_market()
+
+    if result["status"] != "ok":
+        return result
+
+    analysis = analyze_full_market(
+        result["stocks"]
+    )
+
+    return {
+        "status": "ok",
+        "source": "tindex.app",
+        "cached": result.get("cached", False),
+        "market_date": (
+            _cache_data.get("as_of")
+            if isinstance(_cache_data, dict)
+            else None
+        ),
+        "analysis": analysis,
         "warning": (
-            "این موتور تحلیل نسخه اولیه است و سود مشخصی را تضمین نمی‌کند."
+            "این رتبه‌بندی نسخه اولیه موتور تحلیل است "
+            "و به معنی تضمین سود نیست."
+        ),
+        "daily_requests_used": daily_requests_used(),
+        "daily_requests_remaining": (
+            daily_requests_remaining()
         )
     }
 
 
 @app.get("/short-term-opportunities")
 def short_term_opportunities():
-    result = get_tindex_overview()
+    result = get_full_market()
 
     if result["status"] != "ok":
         return result
 
-    data = result["data"]
-    analyzed = analyze_market(data)
+    analysis = analyze_full_market(
+        result["stocks"]
+    )
 
     opportunities = []
 
     for rank, stock in enumerate(
-        analyzed["short_term_top_3"],
+        analysis["short_term_top_20"][:10],
         start=1
     ):
         opportunities.append({
             "rank": rank,
-            "score": stock["short_term_score"],
+            "score": stock["score"],
             "ticker": stock["ticker"],
             "name": stock["name"],
             "sector": stock["sector"],
             "current_price": stock["current_price"],
             "change_percent": stock["change_percent"],
             "trade_value": stock["trade_value"],
+            "market_cap": stock["market_cap"],
             "pe": stock["pe"],
             "reasons": stock["reasons"]
         })
@@ -592,41 +650,43 @@ def short_term_opportunities():
         "status": "ok",
         "source": "tindex.app",
         "section": "short_term_opportunities",
-        "title": "۳ فرصت برتر کوتاه‌مدت",
-        "market_date": data.get("as_of"),
+        "title": "۱۰ فرصت برتر کوتاه‌مدت",
         "count": len(opportunities),
         "opportunities": opportunities,
         "warning": (
-            "این رتبه‌بندی سیگنال اولیه است و تضمین سود نیست."
+            "این رتبه‌بندی سیگنال اولیه است "
+            "و سود تضمینی نیست."
         )
     }
 
 
 @app.get("/six-month-opportunities")
 def six_month_opportunities():
-    result = get_tindex_overview()
+    result = get_full_market()
 
     if result["status"] != "ok":
         return result
 
-    data = result["data"]
-    analyzed = analyze_market(data)
+    analysis = analyze_full_market(
+        result["stocks"]
+    )
 
     opportunities = []
 
     for rank, stock in enumerate(
-        analyzed["six_month_top_10"],
+        analysis["six_month_top_20"][:10],
         start=1
     ):
         opportunities.append({
             "rank": rank,
-            "score": stock["six_month_score"],
+            "score": stock["score"],
             "ticker": stock["ticker"],
             "name": stock["name"],
             "sector": stock["sector"],
             "current_price": stock["current_price"],
             "change_percent": stock["change_percent"],
             "trade_value": stock["trade_value"],
+            "market_cap": stock["market_cap"],
             "pe": stock["pe"],
             "reasons": stock["reasons"]
         })
@@ -636,39 +696,39 @@ def six_month_opportunities():
         "source": "tindex.app",
         "section": "six_month_opportunities",
         "title": "۱۰ فرصت برتر ۶ ماهه",
-        "market_date": data.get("as_of"),
         "count": len(opportunities),
         "opportunities": opportunities,
         "warning": (
-            "این رتبه‌بندی نسخه اولیه موتور تحلیل است و سود تضمینی نیست."
+            "این رتبه‌بندی نسخه اولیه است "
+            "و سود تضمینی نیست."
         )
     }
 
 
 @app.get("/scanner/step")
 def scanner_step():
-    result = get_tindex_overview()
+    result = get_full_market()
 
     if result["status"] != "ok":
         return result
 
-    data = result["data"]
-    boards = get_boards(data)
-
-    stock_count = 0
-
-    for rows in boards.values():
-        if isinstance(rows, list):
-            stock_count += len(rows)
+    stocks = result["stocks"]
+    analysis = analyze_full_market(stocks)
 
     return {
         "status": "ok",
         "source": "tindex.app",
-        "message": "مرحله اسکن با موفقیت اجرا شد.",
-        "market_date": data.get("as_of"),
+        "message": "اسکن کامل بازار با موفقیت انجام شد.",
+        "total_stocks": len(stocks),
+        "top_gainers": analysis["top_gainers"][:10],
+        "top_losers": analysis["top_losers"][:10],
+        "most_active": analysis["most_active"][:10],
+        "next_step": (
+            "مرحله بعد: اضافه کردن تحلیل جریان پول حقیقی، "
+            "صف خرید و فروش، روند تاریخی و امتیاز ریسک."
+        ),
         "daily_requests_used": daily_requests_used(),
-        "daily_requests_remaining": daily_requests_remaining(),
-        "breadth": data.get("breadth", {}),
-        "detected_board_rows": stock_count,
-        "next_step": "اسکن کامل بازار آماده توسعه است."
+        "daily_requests_remaining": (
+            daily_requests_remaining()
+        )
     }
