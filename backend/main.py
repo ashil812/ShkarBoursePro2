@@ -12,11 +12,9 @@ app = FastAPI(
 )
 
 
-# ============================================================
+# =========================================================
 # TINDEX
-# ============================================================
-
-TINDEX_TOKEN = os.getenv("TINDEX_TOKEN", "").strip()
+# =========================================================
 
 TINDEX_BASE_URL = "https://tindex.app/api/public"
 
@@ -29,74 +27,397 @@ STOCKS_URL = (
 )
 
 
-# ============================================================
-# RATE LIMIT
-# ============================================================
+# =========================================================
+# LIMITS
+# =========================================================
 
-# پلن رایگان TIndex:
-# حدود 1 درخواست در دقیقه
-#
-# ما کمی فاصله امن می‌گذاریم تا به 429 نخوریم.
+# TIndex free plan:
+# 1 request / minute
+# 100 successful requests / day
 
-MIN_REQUEST_INTERVAL = 65
+MIN_REQUEST_INTERVAL = 61
+DAILY_LIMIT = 100
+
+PER_PAGE = 100
+
+# چند درخواست را برای اطلاعات کلی بازار ذخیره می‌کنیم
+RESERVED_REQUESTS = 15
 
 
-_last_tindex_request = 0.0
+# =========================================================
+# GLOBAL CACHE
+# =========================================================
 
-_request_lock = threading.Lock()
+market_overview = None
+
+stocks_cache = {}
+
+current_page = 1
+total_pages = None
+total_symbols = None
+
+last_request_time = 0
+
+daily_successful_requests = 0
+daily_date = None
+
+last_error = None
+
+cache_lock = threading.Lock()
 
 
-def wait_for_tindex_slot():
+# =========================================================
+# TOKEN
+# =========================================================
 
-    global _last_tindex_request
+def get_token():
 
-    with _request_lock:
+    token = os.getenv("TINDEX_TOKEN", "").strip()
 
-        now = time.time()
+    if not token:
+        return None
 
-        elapsed = now - _last_tindex_request
+    return token
 
-        if elapsed < MIN_REQUEST_INTERVAL:
 
-            wait_seconds = (
-                MIN_REQUEST_INTERVAL - elapsed
+# =========================================================
+# DAILY COUNTER
+# =========================================================
+
+def reset_daily_counter_if_needed():
+
+    global daily_date
+    global daily_successful_requests
+
+    today = time.strftime("%Y-%m-%d")
+
+    if daily_date != today:
+
+        daily_date = today
+        daily_successful_requests = 0
+
+
+# =========================================================
+# REQUEST CONTROL
+# =========================================================
+
+def can_make_request():
+
+    reset_daily_counter_if_needed()
+
+    now = time.time()
+
+    # فاصله بین درخواست‌ها
+    if now - last_request_time < MIN_REQUEST_INTERVAL:
+        return False
+
+    # سهمیه روزانه
+    if daily_successful_requests >= DAILY_LIMIT:
+        return False
+
+    return True
+
+
+# =========================================================
+# TINDEX REQUEST
+# =========================================================
+
+def tindex_get(url, params=None):
+
+    global last_request_time
+    global daily_successful_requests
+    global last_error
+
+    token = get_token()
+
+    if not token:
+
+        return {
+            "status": "error",
+            "message": "TINDEX_TOKEN پیدا نشد."
+        }
+
+    with cache_lock:
+
+        reset_daily_counter_if_needed()
+
+        if not can_make_request():
+
+            return {
+                "status": "rate_limited_local",
+                "message": (
+                    "فعلاً درخواست جدید به TIndex ارسال نمی‌شود "
+                    "تا محدودیت API رعایت شود."
+                )
+            }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "ShkarBoursePro2/3.0"
+        }
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=30
             )
 
-            time.sleep(wait_seconds)
+            # زمان آخرین درخواست
+            last_request_time = time.time()
 
-        _last_tindex_request = time.time()
+            # -------------------------------------------------
+            # 429
+            # -------------------------------------------------
+
+            if response.status_code == 429:
+
+                retry_after = response.headers.get(
+                    "Retry-After",
+                    "60"
+                )
+
+                last_error = (
+                    f"TIndex rate limit. Retry-After={retry_after}"
+                )
+
+                return {
+                    "status": "rate_limited",
+                    "retry_after": retry_after,
+                    "message": (
+                        "محدودیت درخواست TIndex فعال است."
+                    )
+                }
+
+            # -------------------------------------------------
+            # AUTH
+            # -------------------------------------------------
+
+            if response.status_code == 401:
+
+                last_error = "Invalid TIndex token"
+
+                return {
+                    "status": "error",
+                    "message": "توکن TIndex معتبر نیست."
+                }
+
+            # -------------------------------------------------
+            # FORBIDDEN
+            # -------------------------------------------------
+
+            if response.status_code == 403:
+
+                last_error = "TIndex API disabled"
+
+                return {
+                    "status": "error",
+                    "message": (
+                        "دسترسی API حساب TIndex غیرفعال شده است."
+                    )
+                }
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            # فقط درخواست موفق سهمیه روزانه را مصرف می‌کند
+            if payload.get("success") is True:
+
+                daily_successful_requests += 1
+
+            else:
+
+                last_error = payload.get(
+                    "message",
+                    "TIndex پاسخ موفقی ارسال نکرد."
+                )
+
+                return {
+                    "status": "error",
+                    "message": last_error
+                }
+
+            return {
+                "status": "ok",
+                "data": payload.get("data"),
+                "headers": {
+                    "limit": response.headers.get(
+                        "X-RateLimit-Limit"
+                    ),
+                    "remaining": response.headers.get(
+                        "X-RateLimit-Remaining"
+                    )
+                }
+            }
+
+        except requests.exceptions.RequestException as exc:
+
+            last_error = str(exc)
+
+            return {
+                "status": "error",
+                "message": (
+                    f"خطا در اتصال به TIndex: {str(exc)}"
+                )
+            }
+
+        except ValueError:
+
+            last_error = "Invalid JSON"
+
+            return {
+                "status": "error",
+                "message": (
+                    "پاسخ TIndex JSON معتبر نبود."
+                )
+            }
 
 
-# ============================================================
-# MARKET CACHE
-# ============================================================
+# =========================================================
+# MARKET OVERVIEW
+# =========================================================
 
-_market_data = None
-_market_time = 0
+def update_market_overview():
 
+    global market_overview
 
-# ============================================================
-# ALL STOCKS CACHE
-# ============================================================
+    result = tindex_get(
+        OVERVIEW_URL
+    )
 
-_all_stocks = {}
+    if result["status"] == "ok":
 
-_stocks_lock = threading.Lock()
+        market_overview = result["data"]
 
-_current_page = 1
-
-_total_pages = None
-
-_total_symbols = 0
-
-_last_page_update = 0
-
-_stocks_complete = False
+    return result
 
 
-# ============================================================
-# SAFE NUMBER
-# ============================================================
+# =========================================================
+# STOCK PAGE
+# =========================================================
+
+def update_stock_page(page):
+
+    global total_pages
+    global total_symbols
+    global stocks_cache
+
+    result = tindex_get(
+        STOCKS_URL,
+        params={
+            "page": page,
+            "per_page": PER_PAGE,
+            "sort": "ticker",
+            "dir": "asc"
+        }
+    )
+
+    if result["status"] != "ok":
+
+        return result
+
+    data = result["data"]
+
+    rows = data.get("rows", [])
+
+    meta = data.get("meta", {})
+
+    total_pages = meta.get(
+        "last_page",
+        total_pages
+    )
+
+    total_symbols = meta.get(
+        "total",
+        total_symbols
+    )
+
+    # ذخیره نمادها
+    for stock in rows:
+
+        ticker = stock.get("ticker")
+
+        if ticker:
+
+            stocks_cache[ticker] = stock
+
+    return {
+        "status": "ok",
+        "page": page,
+        "rows": len(rows),
+        "total_pages": total_pages,
+        "total_symbols": total_symbols
+    }
+
+
+# =========================================================
+# NEXT MARKET UPDATE
+# =========================================================
+
+def perform_next_update():
+
+    global current_page
+
+    reset_daily_counter_if_needed()
+
+    # -----------------------------------------------
+    # اگر تقریباً سهمیه روزانه تمام شده
+    # -----------------------------------------------
+
+    if daily_successful_requests >= (
+        DAILY_LIMIT - RESERVED_REQUESTS
+    ):
+
+        return {
+            "status": "daily_budget_reserved",
+            "message": (
+                "سهمیه روزانه برای درخواست‌های ضروری "
+                "ذخیره شده است."
+            )
+        }
+
+    # -----------------------------------------------
+    # ابتدا بازار کلی
+    # -----------------------------------------------
+
+    if market_overview is None:
+
+        return update_market_overview()
+
+    # -----------------------------------------------
+    # اسکن صفحات سهام
+    # -----------------------------------------------
+
+    if total_pages is None:
+
+        total_pages_local = 17
+
+    else:
+
+        total_pages_local = total_pages
+
+    result = update_stock_page(
+        current_page
+    )
+
+    if result["status"] == "ok":
+
+        current_page += 1
+
+        if current_page > total_pages_local:
+
+            current_page = 1
+
+    return result
+
+
+# =========================================================
+# MARKET SCORE
+# =========================================================
 
 def safe_number(value, default=0.0):
 
@@ -112,351 +433,37 @@ def safe_number(value, default=0.0):
         return default
 
 
-# ============================================================
-# TINDEX REQUEST
-# ============================================================
+def get_market_change(data):
 
-def tindex_get(url, params=None):
+    if not data:
+        return 0.0
 
-    global _last_tindex_request
+    for index in data.get("indices", []):
 
-    if not TINDEX_TOKEN:
-
-        return {
-            "status": "error",
-            "message": "TINDEX_TOKEN پیدا نشد."
-        }
-
-    wait_for_tindex_slot()
-
-    headers = {
-        "Authorization": f"Bearer {TINDEX_TOKEN}",
-        "Accept": "application/json",
-        "User-Agent": "ShkarBoursePro2/3.0"
-    }
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=30
+        name = str(
+            index.get("name", "")
         )
 
-        if response.status_code == 429:
+        slug = str(
+            index.get("slug", "")
+        ).upper()
 
-            retry_after = response.headers.get(
-                "Retry-After",
-                "نامشخص"
+        if (
+            "کل" in name
+            or slug == "TEDPIX"
+        ):
+
+            return safe_number(
+                index.get("change_percent"),
+                0
             )
 
-            return {
-                "status": "error",
-                "rate_limited": True,
-                "message": (
-                    "TIndex محدودیت درخواست اعمال کرده. "
-                    f"Retry-After: {retry_after}"
-                )
-            }
+    return 0.0
 
-        if response.status_code == 401:
 
-            return {
-                "status": "error",
-                "message": "TINDEX_TOKEN معتبر نیست."
-            }
+def calculate_score(stock, market_change):
 
-        if response.status_code == 403:
-
-            return {
-                "status": "error",
-                "message": (
-                    "دسترسی API برای این حساب توسط TIndex "
-                    "غیرفعال شده است."
-                )
-            }
-
-        response.raise_for_status()
-
-        payload = response.json()
-
-        if not payload.get("success"):
-
-            return {
-                "status": "error",
-                "message": payload.get(
-                    "message",
-                    "TIndex پاسخ موفقی ارسال نکرد."
-                )
-            }
-
-        return {
-            "status": "ok",
-            "data": payload.get("data"),
-            "meta": payload.get("meta")
-        }
-
-    except requests.exceptions.RequestException as e:
-
-        return {
-            "status": "error",
-            "message": f"خطا در اتصال به TIndex: {str(e)}"
-        }
-
-    except ValueError:
-
-        return {
-            "status": "error",
-            "message": "پاسخ TIndex JSON معتبر نبود."
-        }
-
-
-# ============================================================
-# MARKET OVERVIEW
-# ============================================================
-
-def get_market_overview():
-
-    global _market_data
-    global _market_time
-
-    now = time.time()
-
-    # کش 60 ثانیه‌ای
-    if (
-        _market_data is not None
-        and (now - _market_time) < 60
-    ):
-
-        return {
-            "status": "ok",
-            "source": "tindex.app",
-            "cached": True,
-            "data": _market_data
-        }
-
-    result = tindex_get(
-        OVERVIEW_URL
-    )
-
-    if result["status"] != "ok":
-
-        # اگر قبلاً داده داشتیم،
-        # همان داده آخر را نگه می‌داریم.
-
-        if _market_data is not None:
-
-            return {
-                "status": "ok",
-                "source": "tindex.app",
-                "cached": True,
-                "stale": True,
-                "data": _market_data
-            }
-
-        return result
-
-    _market_data = result["data"]
-
-    _market_time = time.time()
-
-    return {
-        "status": "ok",
-        "source": "tindex.app",
-        "cached": False,
-        "data": _market_data
-    }
-
-
-# ============================================================
-# FETCH ONE STOCK PAGE
-# ============================================================
-
-def fetch_stock_page(page):
-
-    global _total_pages
-    global _total_symbols
-    global _last_page_update
-
-    result = tindex_get(
-        STOCKS_URL,
-        params={
-            "page": page,
-            "per_page": 100,
-            "sort": "ticker",
-            "dir": "asc"
-        }
-    )
-
-    if result["status"] != "ok":
-
-        return result
-
-    data = result.get("data") or {}
-
-    rows = data.get("rows") or []
-
-    meta = result.get("meta") or {}
-
-    if not meta:
-
-        meta = data.get("meta") or {}
-
-    total = safe_number(
-        meta.get("total"),
-        0
-    )
-
-    last_page = safe_number(
-        meta.get("last_page"),
-        0
-    )
-
-    if total > 0:
-
-        _total_symbols = int(total)
-
-    if last_page > 0:
-
-        _total_pages = int(last_page)
-
-    added = 0
-
-    with _stocks_lock:
-
-        for stock in rows:
-
-            slug = stock.get("slug")
-
-            if not slug:
-
-                continue
-
-            _all_stocks[slug] = stock
-
-            added += 1
-
-        _last_page_update = time.time()
-
-    return {
-        "status": "ok",
-        "page": page,
-        "rows": added,
-        "total_cached": len(_all_stocks),
-        "total_symbols": _total_symbols,
-        "total_pages": _total_pages
-    }
-
-
-# ============================================================
-# BACKGROUND STOCK COLLECTOR
-# ============================================================
-
-def stock_collector():
-
-    global _current_page
-    global _stocks_complete
-    global _total_pages
-
-    print(
-        "Shkar Bourse stock collector started."
-    )
-
-    while True:
-
-        try:
-
-            # اگر کل بازار هنوز کامل نشده،
-            # صفحه بعدی را دریافت کن.
-
-            if _total_pages is None:
-
-                page = 1
-
-            else:
-
-                page = _current_page
-
-            result = fetch_stock_page(page)
-
-            if result["status"] == "ok":
-
-                print(
-                    "TIndex stock page:",
-                    page,
-                    "| cached:",
-                    len(_all_stocks),
-                    "| total:",
-                    _total_symbols,
-                    "| pages:",
-                    _total_pages
-                )
-
-                if (
-                    _total_pages is not None
-                    and page >= _total_pages
-                ):
-
-                    _stocks_complete = True
-
-                    _current_page = 1
-
-                else:
-
-                    _current_page = page + 1
-
-            else:
-
-                print(
-                    "TIndex stock collector error:",
-                    result.get("message")
-                )
-
-                # در خطا، صفحه را جلو نمی‌بریم.
-
-            # مهم:
-            # حداقل 65 ثانیه بین درخواست‌های TIndex
-
-            time.sleep(MIN_REQUEST_INTERVAL)
-
-        except Exception as e:
-
-            print(
-                "Stock collector exception:",
-                str(e)
-            )
-
-            time.sleep(
-                MIN_REQUEST_INTERVAL
-            )
-
-
-# ============================================================
-# START BACKGROUND COLLECTOR
-# ============================================================
-
-@app.on_event("startup")
-def startup_event():
-
-    collector = threading.Thread(
-        target=stock_collector,
-        daemon=True
-    )
-
-    collector.start()
-
-
-# ============================================================
-# SHORT TERM SCORE
-# ============================================================
-
-def calculate_short_term_score(
-    stock,
-    market_data=None
-):
-
-    score = 0.0
+    score = 0
 
     change = safe_number(
         stock.get("change"),
@@ -468,97 +475,49 @@ def calculate_short_term_score(
         0
     )
 
-    volume = safe_number(
-        stock.get("volume"),
-        0
-    )
-
-    market_cap = safe_number(
-        stock.get("market_cap"),
-        0
-    )
-
     pe = stock.get("pe")
 
-    # --------------------------------------------------------
+    # -----------------------------------------------
     # Momentum
-    # --------------------------------------------------------
+    # -----------------------------------------------
 
-    if change >= 5:
-
-        score += 25
-
-    elif change >= 3:
-
+    if change >= 3:
         score += 20
 
     elif change >= 2:
-
         score += 15
 
     elif change >= 1:
-
-        score += 8
+        score += 10
 
     elif change > 0:
-
-        score += 4
+        score += 5
 
     elif change <= -3:
-
         score -= 15
 
     elif change <= -2:
-
         score -= 10
 
-    # --------------------------------------------------------
-    # Trade value
-    # --------------------------------------------------------
+    # -----------------------------------------------
+    # Liquidity
+    # -----------------------------------------------
 
     if value >= 10_000_000_000_000:
-
-        score += 25
-
-    elif value >= 5_000_000_000_000:
-
         score += 20
 
+    elif value >= 5_000_000_000_000:
+        score += 15
+
     elif value >= 1_000_000_000_000:
-
-        score += 14
-
-    elif value >= 100_000_000_000:
-
-        score += 7
-
-    # --------------------------------------------------------
-    # Volume
-    # --------------------------------------------------------
-
-    if volume > 1_000_000_000:
-
         score += 10
 
-    elif volume > 100_000_000:
-
-        score += 6
-
-    elif volume > 10_000_000:
-
-        score += 3
-
-    # --------------------------------------------------------
-    # Market cap
-    # --------------------------------------------------------
-
-    if market_cap > 0:
-
+    elif value >= 100_000_000_000:
         score += 5
 
-    # --------------------------------------------------------
+    # -----------------------------------------------
     # P/E
-    # --------------------------------------------------------
+    # -----------------------------------------------
 
     if pe is not None:
 
@@ -568,140 +527,31 @@ def calculate_short_term_score(
         )
 
         if 0 < pe_value <= 6:
-
             score += 15
 
         elif 6 < pe_value <= 10:
-
             score += 10
 
         elif 10 < pe_value <= 15:
-
             score += 5
 
         elif pe_value > 30:
-
-            score -= 10
+            score -= 8
 
         elif pe_value < 0:
-
             score -= 5
 
-    return max(
-        0,
-        min(
-            100,
-            round(score)
-        )
-    )
+    # -----------------------------------------------
+    # Relative strength
+    # -----------------------------------------------
 
-
-# ============================================================
-# SIX MONTH SCORE
-# ============================================================
-
-def calculate_six_month_score(
-    stock,
-    market_data=None
-):
-
-    score = 0.0
-
-    change = safe_number(
-        stock.get("change"),
-        0
-    )
-
-    value = safe_number(
-        stock.get("value"),
-        0
-    )
-
-    market_cap = safe_number(
-        stock.get("market_cap"),
-        0
-    )
-
-    pe = stock.get("pe")
-
-    # --------------------------------------------------------
-    # Liquidity
-    # --------------------------------------------------------
-
-    if value >= 10_000_000_000_000:
-
-        score += 25
-
-    elif value >= 5_000_000_000_000:
-
-        score += 20
-
-    elif value >= 1_000_000_000_000:
-
-        score += 15
-
-    elif value >= 100_000_000_000:
-
-        score += 8
-
-    # --------------------------------------------------------
-    # Momentum
-    # --------------------------------------------------------
-
-    if change >= 5:
-
-        score += 12
-
-    elif change >= 3:
+    if change > market_change:
 
         score += 10
 
-    elif change >= 2:
+    elif change < market_change - 2:
 
-        score += 8
-
-    elif change > 0:
-
-        score += 4
-
-    # --------------------------------------------------------
-    # Market cap
-    # --------------------------------------------------------
-
-    if market_cap > 0:
-
-        score += 8
-
-    # --------------------------------------------------------
-    # P/E
-    # --------------------------------------------------------
-
-    if pe is not None:
-
-        pe_value = safe_number(
-            pe,
-            0
-        )
-
-        if 0 < pe_value <= 6:
-
-            score += 20
-
-        elif 6 < pe_value <= 10:
-
-            score += 15
-
-        elif 10 < pe_value <= 15:
-
-            score += 8
-
-        elif pe_value > 30:
-
-            score -= 10
-
-        elif pe_value < 0:
-
-            score -= 8
+        score -= 5
 
     return max(
         0,
@@ -712,127 +562,33 @@ def calculate_six_month_score(
     )
 
 
-# ============================================================
-# REASONS
-# ============================================================
-
-def build_reasons(stock):
-
-    reasons = []
-
-    change = safe_number(
-        stock.get("change"),
-        0
-    )
-
-    value = safe_number(
-        stock.get("value"),
-        0
-    )
-
-    pe = stock.get("pe")
-
-    if change >= 3:
-
-        reasons.append(
-            "مومنتوم روزانه قدرتمند"
-        )
-
-    elif change > 0:
-
-        reasons.append(
-            "مومنتوم روزانه مثبت"
-        )
-
-    if value >= 10_000_000_000_000:
-
-        reasons.append(
-            "ارزش معاملات بسیار بالا"
-        )
-
-    elif value >= 1_000_000_000_000:
-
-        reasons.append(
-            "نقدشوندگی مناسب"
-        )
-
-    if pe is not None:
-
-        pe_value = safe_number(
-            pe,
-            0
-        )
-
-        if 0 < pe_value <= 10:
-
-            reasons.append(
-                "P/E نسبتاً مناسب"
-            )
-
-        elif pe_value > 30:
-
-            reasons.append(
-                "P/E بالا؛ نیازمند بررسی ارزش‌گذاری"
-            )
-
-    if not reasons:
-
-        reasons.append(
-            "نیازمند بررسی عمیق‌تر"
-        )
-
-    return reasons
-
-
-# ============================================================
-# ANALYZE ALL CACHED STOCKS
-# ============================================================
+# =========================================================
+# ANALYSIS ENGINE
+# =========================================================
 
 def analyze_all_stocks():
 
-    with _stocks_lock:
-
-        stocks = list(
-            _all_stocks.values()
-        )
+    market_change = get_market_change(
+        market_overview
+    )
 
     candidates = []
 
-    for stock in stocks:
+    for stock in stocks_cache.values():
 
-        ticker = stock.get("ticker")
-
-        if not ticker:
-
-            continue
-
-        short_score = (
-            calculate_short_term_score(
-                stock
-            )
-        )
-
-        six_score = (
-            calculate_six_month_score(
-                stock
-            )
+        score = calculate_score(
+            stock,
+            market_change
         )
 
         candidates.append({
 
-            "slug": stock.get(
-                "slug"
+            "ticker": stock.get(
+                "ticker"
             ),
-
-            "ticker": ticker,
 
             "name": stock.get(
                 "name",
-                "---"
-            ),
-
-            "sector": stock.get(
-                "sector",
                 "---"
             ),
 
@@ -846,23 +602,13 @@ def analyze_all_stocks():
                 0
             ),
 
-            "closing_price": stock.get(
-                "closing_price",
-                0
-            ),
-
-            "closing_change_percent": stock.get(
-                "closing_change",
+            "trade_value": stock.get(
+                "value",
                 0
             ),
 
             "volume": stock.get(
                 "volume",
-                0
-            ),
-
-            "trade_value": stock.get(
-                "value",
                 0
             ),
 
@@ -875,351 +621,399 @@ def analyze_all_stocks():
                 "pe"
             ),
 
-            "short_term_score": short_score,
-
-            "six_month_score": six_score,
-
-            "reasons": build_reasons(
-                stock
-            )
+            "score": score
         })
 
-    short_term = sorted(
-        candidates,
-        key=lambda x: (
-            x["short_term_score"],
-            x["trade_value"]
-        ),
+    candidates.sort(
+        key=lambda x: x["score"],
         reverse=True
-    )[:3]
+    )
 
-    six_month = sorted(
-        candidates,
-        key=lambda x: (
-            x["six_month_score"],
-            x["trade_value"]
-        ),
-        reverse=True
-    )[:10]
-
-    return {
-        "short_term_top_3": short_term,
-        "six_month_top_10": six_month
-    }
+    return candidates
 
 
-# ============================================================
+# =========================================================
 # ROOT
-# ============================================================
+# =========================================================
 
 @app.get("/")
 def root():
 
     return {
-
         "status": "ok",
-
-        "message":
-            "Shkar Bourse API is running",
-
-        "version":
-            "3.0.0",
-
-        "source":
-            "tindex.app",
-
-        "tsetmc_direct":
-            False
-
+        "message": "Shkar Bourse API is running",
+        "version": "3.0.0",
+        "source": "tindex.app"
     }
 
 
-# ============================================================
+# =========================================================
 # HEALTH
-# ============================================================
+# =========================================================
 
 @app.get("/health")
 def health():
 
+    reset_daily_counter_if_needed()
+
     return {
 
-        "status":
-            "healthy",
+        "status": "healthy",
 
-        "source":
-            "tindex.app",
+        "source": "tindex.app",
 
-        "cached_stocks":
-            len(_all_stocks),
+        "cached_stocks": len(
+            stocks_cache
+        ),
 
-        "total_symbols":
-            _total_symbols,
+        "total_symbols": total_symbols,
 
-        "total_pages":
-            _total_pages,
+        "total_pages": total_pages,
 
-        "stocks_complete":
-            _stocks_complete
+        "current_page": current_page,
 
+        "stocks_complete": (
+            total_symbols is not None
+            and len(stocks_cache) >= total_symbols
+        ),
+
+        "daily_requests_used": (
+            daily_successful_requests
+        ),
+
+        "daily_requests_remaining_local": max(
+            0,
+            DAILY_LIMIT -
+            daily_successful_requests
+        ),
+
+        "last_error": last_error
     }
 
 
-# ============================================================
+# =========================================================
 # MARKET
-# ============================================================
+# =========================================================
 
 @app.get("/market")
 def market():
 
-    return get_market_overview()
+    # فقط از کش خودمان جواب بده
+    # تا هر کاربر مستقیماً TIndex را صدا نزند.
 
+    if market_overview is None:
 
-# ============================================================
-# STOCK UNIVERSE STATUS
-# ============================================================
+        result = update_market_overview()
 
-@app.get("/stocks-status")
-def stocks_status():
+        if result["status"] != "ok":
 
-    with _stocks_lock:
-
-        cached_count = len(
-            _all_stocks
-        )
-
-    progress = 0.0
-
-    if _total_symbols > 0:
-
-        progress = (
-            cached_count
-            /
-            _total_symbols
-        ) * 100
+            return result
 
     return {
 
-        "status":
-            "ok",
+        "status": "ok",
 
-        "source":
-            "tindex.app",
+        "source": "tindex.app",
 
-        "cached_stocks":
-            cached_count,
+        "data": market_overview,
 
-        "total_symbols":
-            _total_symbols,
-
-        "total_pages":
-            _total_pages,
-
-        "current_page":
-            _current_page,
-
-        "progress_percent":
-            round(
-                progress,
-                2
-            ),
-
-        "complete":
-            _stocks_complete,
-
-        "last_page_update":
-            _last_page_update,
-
-        "request_interval_seconds":
-            MIN_REQUEST_INTERVAL,
-
-        "message":
-            (
-                "داده‌های کل بازار به‌صورت "
-                "تدریجی و کنترل‌شده دریافت می‌شوند."
-            )
-
+        "cached_stocks": len(
+            stocks_cache
+        )
     }
 
 
-# ============================================================
+# =========================================================
 # ANALYSIS
-# ============================================================
+# =========================================================
 
 @app.get("/analysis")
 def analysis():
 
-    analyzed = (
-        analyze_all_stocks()
-    )
+    # تحلیل فقط روی داده‌هایی که تا الان
+    # در کش جمع شده‌اند.
+
+    candidates = analyze_all_stocks()
 
     return {
 
-        "status":
-            "ok",
+        "status": "ok",
 
-        "source":
-            "tindex.app",
+        "source": "tindex.app",
 
-        "coverage": {
+        "stocks_loaded": len(
+            stocks_cache
+        ),
 
-            "cached_stocks":
-                len(_all_stocks),
+        "total_symbols": total_symbols,
 
-            "total_symbols":
-                _total_symbols,
+        "stocks_complete": (
+            total_symbols is not None
+            and len(stocks_cache) >= total_symbols
+        ),
 
-            "complete":
-                _stocks_complete
+        "top_3": candidates[:3],
 
-        },
+        "top_10": candidates[:10],
 
-        "analysis":
-            analyzed,
-
-        "warning":
-            (
-                "امتیازها نسخه اولیه موتور تحلیل "
-                "هستند و سود تضمینی نیستند."
-            )
-
+        "warning": (
+            "این نسخه موتور رتبه‌بندی اولیه است "
+            "و به معنی تضمین سود یا دو برابر شدن قیمت نیست."
+        )
     }
 
 
-# ============================================================
+# =========================================================
 # SHORT TERM
-# ============================================================
+# =========================================================
 
-@app.get(
-    "/short-term-opportunities"
-)
+@app.get("/short-term-opportunities")
 def short_term_opportunities():
 
-    analyzed = (
-        analyze_all_stocks()
-    )
+    candidates = analyze_all_stocks()
 
-    opportunities = []
+    top = candidates[:3]
+
+    result = []
 
     for rank, stock in enumerate(
-        analyzed["short_term_top_3"],
+        top,
         start=1
     ):
 
-        item = dict(stock)
+        result.append({
 
-        item["rank"] = rank
+            "rank": rank,
 
-        opportunities.append(
-            item
-        )
+            "score": stock["score"],
+
+            "ticker": stock["ticker"],
+
+            "name": stock["name"],
+
+            "current_price": stock[
+                "current_price"
+            ],
+
+            "change_percent": stock[
+                "change_percent"
+            ],
+
+            "trade_value": stock[
+                "trade_value"
+            ],
+
+            "pe": stock["pe"]
+
+        })
 
     return {
 
-        "status":
-            "ok",
+        "status": "ok",
 
-        "source":
-            "tindex.app",
+        "section": (
+            "short_term_opportunities"
+        ),
 
-        "section":
-            "short_term_opportunities",
+        "title": (
+            "۳ فرصت برتر کوتاه‌مدت"
+        ),
 
-        "title":
-            "۳ فرصت برتر کوتاه‌مدت",
+        "stocks_loaded": len(
+            stocks_cache
+        ),
 
-        "coverage": {
+        "complete_market": (
+            total_symbols is not None
+            and len(stocks_cache) >= total_symbols
+        ),
 
-            "cached_stocks":
-                len(_all_stocks),
+        "opportunities": result,
 
-            "total_symbols":
-                _total_symbols,
-
-            "complete":
-                _stocks_complete
-
-        },
-
-        "count":
-            len(opportunities),
-
-        "opportunities":
-            opportunities,
-
-        "warning":
-            (
-                "این نسخه هنوز پیش‌بینی قطعی "
-                "دو برابر شدن قیمت نیست."
-            )
-
+        "warning": (
+            "این رتبه‌بندی تحلیلی است و "
+            "تضمین دو برابر شدن قیمت نیست."
+        )
     }
 
 
-# ============================================================
+# =========================================================
 # SIX MONTH
-# ============================================================
+# =========================================================
 
-@app.get(
-    "/six-month-opportunities"
-)
+@app.get("/six-month-opportunities")
 def six_month_opportunities():
 
-    analyzed = (
-        analyze_all_stocks()
-    )
+    candidates = analyze_all_stocks()
 
-    opportunities = []
+    top = candidates[:10]
+
+    result = []
 
     for rank, stock in enumerate(
-        analyzed["six_month_top_10"],
+        top,
         start=1
     ):
 
-        item = dict(stock)
+        result.append({
 
-        item["rank"] = rank
+            "rank": rank,
 
-        opportunities.append(
-            item
-        )
+            "rank_score": stock[
+                "score"
+            ],
+
+            "ticker": stock[
+                "ticker"
+            ],
+
+            "name": stock[
+                "name"
+            ],
+
+            "current_price": stock[
+                "current_price"
+            ],
+
+            "change_percent": stock[
+                "change_percent"
+            ],
+
+            "trade_value": stock[
+                "trade_value"
+            ],
+
+            "market_cap": stock[
+                "market_cap"
+            ],
+
+            "pe": stock[
+                "pe"
+            ]
+
+        })
 
     return {
 
-        "status":
-            "ok",
+        "status": "ok",
 
-        "source":
-            "tindex.app",
+        "section": (
+            "six_month_opportunities"
+        ),
 
-        "section":
-            "six_month_opportunities",
+        "title": (
+            "۱۰ فرصت برتر سرمایه‌گذاری ۶ ماهه"
+        ),
 
-        "title":
-            "۱۰ فرصت برتر سرمایه‌گذاری ۶ ماهه",
+        "stocks_loaded": len(
+            stocks_cache
+        ),
 
-        "coverage": {
+        "complete_market": (
+            total_symbols is not None
+            and len(stocks_cache) >= total_symbols
+        ),
 
-            "cached_stocks":
-                len(_all_stocks),
+        "opportunities": result,
 
-            "total_symbols":
-                _total_symbols,
+        "warning": (
+            "این نسخه موتور تحلیل اولیه است "
+            "و سود تضمینی ارائه نمی‌کند."
+        )
+    }
 
-            "complete":
-                _stocks_complete
+
+# =========================================================
+# ADMIN / REFRESH STATUS
+# =========================================================
+
+@app.get("/scanner-status")
+def scanner_status():
+
+    reset_daily_counter_if_needed()
+
+    return {
+
+        "status": "ok",
+
+        "source": "tindex.app",
+
+        "scanner": {
+
+            "current_page": current_page,
+
+            "total_pages": total_pages,
+
+            "cached_stocks": len(
+                stocks_cache
+            ),
+
+            "total_symbols": total_symbols,
+
+            "complete": (
+                total_symbols is not None
+                and len(stocks_cache) >= total_symbols
+            )
 
         },
 
-        "count":
-            len(opportunities),
+        "rate_limit": {
 
-        "opportunities":
-            opportunities,
+            "daily_limit": DAILY_LIMIT,
 
-        "warning":
-            (
-                "این نسخه رتبه‌بندی اولیه است "
-                "و سود تضمینی نیست."
+            "successful_requests_used": (
+                daily_successful_requests
+            ),
+
+            "remaining_local": max(
+                0,
+                DAILY_LIMIT -
+                daily_successful_requests
+            ),
+
+            "minimum_interval_seconds": (
+                MIN_REQUEST_INTERVAL
             )
+
+        },
+
+        "message": (
+            "هر بار فراخوانی این endpoint "
+            "به TIndex درخواست ارسال نمی‌کند."
+        )
+    }
+
+
+# =========================================================
+# MANUAL SCAN STEP
+# =========================================================
+
+@app.post("/scanner/step")
+def scanner_step():
+
+    result = perform_next_update()
+
+    return {
+
+        "status": result.get(
+            "status",
+            "unknown"
+        ),
+
+        "result": result,
+
+        "cached_stocks": len(
+            stocks_cache
+        ),
+
+        "total_symbols": total_symbols,
+
+        "current_page": current_page,
+
+        "total_pages": total_pages,
+
+        "daily_requests_used": (
+            daily_successful_requests
+        )
 
     }
