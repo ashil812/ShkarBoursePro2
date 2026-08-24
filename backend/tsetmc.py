@@ -1,157 +1,436 @@
 import os
 import time
+import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import requests
 
 
-TINDEX_URL = "https://tindex.app/api/public/stock-market/overview"
+TINDEX_BASE_URL = "https://tindex.app/api/public"
 
-# محدودیت‌های TIndex
-MIN_REQUEST_INTERVAL = 60       # حداقل 60 ثانیه بین درخواست‌ها
-MAX_DAILY_REQUESTS = 100
+OVERVIEW_URL = (
+    f"{TINDEX_BASE_URL}/stock-market/overview"
+)
 
-# کش محلی
-_cache_data = None
-_cache_time = 0
+STOCKS_URL = (
+    f"{TINDEX_BASE_URL}/stocks/by-category/stock-energy"
+)
 
-# کنترل درخواست‌ها
-_last_request_time = 0
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+DAILY_LIMIT = 100
+
+# فاصله واقعی بین درخواست‌ها
+REQUEST_INTERVAL = 75
+
+# شروع بازار
+MARKET_START_HOUR = 9
+MARKET_START_MINUTE = 0
+
+# پایان جمع‌آوری
+MARKET_END_HOUR = 12
+MARKET_END_MINUTE = 30
+
+
+# =========================================================
+# GLOBAL STATE
+# =========================================================
+
+_last_request_time = 0.0
 _daily_requests_used = 0
 _daily_date = None
-
 _last_error = None
 
+_state_lock = threading.Lock()
+
+
+# =========================================================
+# TIME
+# =========================================================
+
+def tehran_now():
+    return datetime.now(
+        ZoneInfo("Asia/Tehran")
+    )
+
+
+def trading_date():
+    now = tehran_now()
+
+    return now.strftime(
+        "%Y-%m-%d"
+    )
+
+
+def is_trading_day():
+    """
+    شنبه تا چهارشنبه
+    """
+
+    return tehran_now().weekday() in (
+        5,  # Saturday
+        6,  # Sunday
+        0,  # Monday
+        1,  # Tuesday
+        2   # Wednesday
+    )
+
+
+def market_start_datetime():
+
+    now = tehran_now()
+
+    return now.replace(
+        hour=MARKET_START_HOUR,
+        minute=MARKET_START_MINUTE,
+        second=0,
+        microsecond=0
+    )
+
+
+def first_request_datetime():
+
+    return (
+        market_start_datetime()
+        .replace(
+            second=0,
+            microsecond=0
+        )
+        + __import__("datetime").timedelta(
+            seconds=REQUEST_INTERVAL
+        )
+    )
+
+
+def is_market_time():
+
+    if not is_trading_day():
+        return False
+
+    now = tehran_now()
+
+    start = market_start_datetime()
+
+    end = now.replace(
+        hour=MARKET_END_HOUR,
+        minute=MARKET_END_MINUTE,
+        second=0,
+        microsecond=0
+    )
+
+    return start <= now <= end
+
+
+def is_first_request_time_reached():
+
+    if not is_trading_day():
+        return False
+
+    return tehran_now() >= first_request_datetime()
+
+
+def seconds_until_first_request():
+
+    if not is_trading_day():
+        return 0
+
+    now = tehran_now()
+    target = first_request_datetime()
+
+    if now >= target:
+        return 0
+
+    return max(
+        0,
+        int(
+            (target - now).total_seconds()
+        )
+    )
+
+
+# =========================================================
+# DAILY COUNTER
+# =========================================================
 
 def _reset_daily_counter():
+
     global _daily_requests_used
     global _daily_date
-
-    today = time.strftime("%Y-%m-%d")
-
-    if _daily_date != today:
-        _daily_date = today
-        _daily_requests_used = 0
-
-
-def _can_request():
     global _last_request_time
-    global _daily_requests_used
+
+    today = trading_date()
+
+    with _state_lock:
+
+        if _daily_date != today:
+
+            _daily_date = today
+            _daily_requests_used = 0
+
+            # مهم:
+            # روز جدید فاصله درخواست قبلی را به ارث نمی‌برد.
+            _last_request_time = 0.0
+
+
+def daily_requests_used():
 
     _reset_daily_counter()
 
-    now = time.time()
+    with _state_lock:
+        return _daily_requests_used
 
-    # محدودیت روزانه
-    if _daily_requests_used >= MAX_DAILY_REQUESTS:
-        return False, (
-            "سقف 100 درخواست روزانه TIndex "
-            "برای این سرویس محلی مصرف شده است."
+
+def daily_requests_remaining():
+
+    return max(
+        0,
+        DAILY_LIMIT
+        - daily_requests_used()
+    )
+
+
+# =========================================================
+# REQUEST TIMING
+# =========================================================
+
+def seconds_until_next_request():
+
+    _reset_daily_counter()
+
+    with _state_lock:
+
+        last_request = (
+            _last_request_time
         )
 
-    # محدودیت یک درخواست در دقیقه
-    if _last_request_time > 0:
-        elapsed = now - _last_request_time
+    # اولین درخواست هر روز:
+    # دقیقاً 75 ثانیه بعد از 09:00
+    if last_request <= 0:
 
-        if elapsed < MIN_REQUEST_INTERVAL:
-            remaining = int(
-                MIN_REQUEST_INTERVAL - elapsed
-            )
+        return seconds_until_first_request()
 
-            return False, (
-                f"برای درخواست بعدی باید "
-                f"{remaining} ثانیه صبر کنیم."
+    elapsed = (
+        time.time()
+        - last_request
+    )
+
+    remaining = (
+        REQUEST_INTERVAL
+        - elapsed
+    )
+
+    if remaining <= 0:
+        return 0
+
+    return int(remaining) + 1
+
+
+def can_request_tindex():
+
+    _reset_daily_counter()
+
+    # خارج از روز معاملاتی
+    if not is_trading_day():
+
+        return (
+            False,
+            "امروز روز معاملاتی نیست."
+        )
+
+    # قبل از شروع بازار
+    if not is_market_time():
+
+        return (
+            False,
+            "در حال حاضر خارج از زمان بازار است."
+        )
+
+    # اولین درخواست
+    if (
+        _last_request_time <= 0
+        and not is_first_request_time_reached()
+    ):
+
+        wait = (
+            seconds_until_first_request()
+        )
+
+        return (
+            False,
+            (
+                "اولین درخواست باید "
+                "75 ثانیه بعد از شروع بازار ارسال شود. "
+                f"{wait} ثانیه باقی مانده."
             )
+        )
+
+    # سقف روزانه
+    if daily_requests_used() >= DAILY_LIMIT:
+
+        return (
+            False,
+            "سقف 100 درخواست امروز مصرف شده است."
+        )
+
+    # فاصله درخواست‌ها
+    wait = seconds_until_next_request()
+
+    if wait > 0:
+
+        return (
+            False,
+            (
+                "برای درخواست بعدی باید "
+                f"{wait} ثانیه صبر شود."
+            )
+        )
 
     return True, None
 
 
-def _request_tindex():
-    global _last_request_time
-    global _daily_requests_used
-    global _last_error
+# =========================================================
+# HEADERS
+# =========================================================
 
-    token = os.getenv("TINDEX_TOKEN", "").strip()
+def get_headers():
+
+    token = os.getenv(
+        "TINDEX_TOKEN",
+        ""
+    ).strip()
 
     if not token:
+        return None
+
+    return {
+        "Authorization": (
+            f"Bearer {token}"
+        ),
+        "Accept": "application/json",
+        "User-Agent": (
+            "ShkarBoursePro2/10.0"
+        )
+    }
+
+
+# =========================================================
+# REQUEST
+# =========================================================
+
+def make_tindex_request(
+    url,
+    params=None
+):
+
+    global _last_error
+    global _last_request_time
+    global _daily_requests_used
+
+    headers = get_headers()
+
+    if headers is None:
+
+        _last_error = (
+            "TINDEX_TOKEN تنظیم نشده است."
+        )
+
         return {
             "status": "error",
             "source": "tindex.app",
-            "message": "TINDEX_TOKEN پیدا نشد."
+            "message": _last_error
         }
 
-    allowed, error_message = _can_request()
+    allowed, reason = (
+        can_request_tindex()
+    )
 
     if not allowed:
+
         return {
             "status": "error",
             "source": "local-rate-limit",
-            "message": error_message,
-            "daily_requests_used": _daily_requests_used,
-            "daily_requests_remaining": max(
-                0,
-                MAX_DAILY_REQUESTS - _daily_requests_used
+            "message": reason,
+            "wait_seconds": (
+                seconds_until_next_request()
+            ),
+            "daily_requests_used": (
+                daily_requests_used()
+            ),
+            "daily_requests_remaining": (
+                daily_requests_remaining()
             )
         }
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "ShkarBoursePro2/2.0"
-    }
+    request_time = time.time()
 
-    try:
-        # درخواست واقعی به TIndex
-        _last_request_time = time.time()
+    with _state_lock:
+
+        _last_request_time = (
+            request_time
+        )
+
         _daily_requests_used += 1
 
+    try:
+
         response = requests.get(
-            TINDEX_URL,
+            url,
             headers=headers,
+            params=params,
             timeout=30
         )
 
-        if response.status_code == 429:
-            _last_error = "TIndex rate limit"
+        if response.status_code == 401:
+
+            _last_error = (
+                "توکن TIndex معتبر نیست."
+            )
 
             return {
                 "status": "error",
                 "source": "tindex.app",
-                "message": (
-                    "TIndex درخواست را به دلیل "
-                    "محدودیت Rate Limit رد کرد."
+                "message": _last_error,
+                "daily_requests_used": (
+                    daily_requests_used()
                 ),
-                "daily_requests_used": _daily_requests_used,
-                "daily_requests_remaining": max(
-                    0,
-                    MAX_DAILY_REQUESTS - _daily_requests_used
+                "daily_requests_remaining": (
+                    daily_requests_remaining()
                 )
             }
 
-        if response.status_code == 401:
-            _last_error = "Invalid TINDEX_TOKEN"
+        if response.status_code == 429:
+
+            _last_error = (
+                "محدودیت درخواست TIndex فعال شده است."
+            )
 
             return {
                 "status": "error",
                 "source": "tindex.app",
-                "message": "توکن TIndex معتبر نیست."
+                "message": _last_error,
+                "daily_requests_used": (
+                    daily_requests_used()
+                ),
+                "daily_requests_remaining": (
+                    daily_requests_remaining()
+                )
             }
 
         response.raise_for_status()
 
         result = response.json()
 
-        if not isinstance(result, dict):
-            _last_error = "Invalid response format"
+        if not isinstance(
+            result,
+            dict
+        ):
 
-            return {
-                "status": "error",
-                "source": "tindex.app",
-                "message": "فرمت پاسخ TIndex معتبر نیست."
-            }
-
-        if result.get("success") is False:
-            _last_error = result.get(
-                "message",
-                "TIndex پاسخ موفقی ارسال نکرد."
+            _last_error = (
+                "پاسخ TIndex معتبر نیست."
             )
 
             return {
@@ -160,16 +439,21 @@ def _request_tindex():
                 "message": _last_error
             }
 
-        # پاسخ TIndex معمولاً شامل data است
-        data = result.get("data", result)
+        if result.get(
+            "success"
+        ) is False:
 
-        if not data:
-            _last_error = "Empty market data"
+            _last_error = str(
+                result.get(
+                    "message",
+                    "TIndex پاسخ موفقی ارسال نکرد."
+                )
+            )
 
             return {
                 "status": "error",
                 "source": "tindex.app",
-                "message": "داده بازار از TIndex دریافت نشد."
+                "message": _last_error
             }
 
         _last_error = None
@@ -177,108 +461,113 @@ def _request_tindex():
         return {
             "status": "ok",
             "source": "tindex.app",
-            "cached": False,
-            "data": data,
-            "daily_requests_used": _daily_requests_used,
-            "daily_requests_remaining": max(
-                0,
-                MAX_DAILY_REQUESTS - _daily_requests_used
+            "data": result.get(
+                "data"
+            ),
+            "meta": result.get(
+                "meta"
+            ),
+            "daily_requests_used": (
+                daily_requests_used()
+            ),
+            "daily_requests_remaining": (
+                daily_requests_remaining()
             )
         }
 
-    except requests.exceptions.RequestException as e:
-        _last_error = str(e)
+    except requests.exceptions.RequestException as exc:
+
+        _last_error = str(
+            exc
+        )
 
         return {
             "status": "error",
             "source": "tindex.app",
-            "message": f"خطا در اتصال به TIndex: {str(e)}",
-            "daily_requests_used": _daily_requests_used,
-            "daily_requests_remaining": max(
-                0,
-                MAX_DAILY_REQUESTS - _daily_requests_used
+            "message": (
+                "خطا در اتصال به TIndex: "
+                + str(exc)
+            ),
+            "daily_requests_used": (
+                daily_requests_used()
+            ),
+            "daily_requests_remaining": (
+                daily_requests_remaining()
             )
         }
 
     except ValueError:
-        _last_error = "Invalid JSON"
+
+        _last_error = (
+            "پاسخ TIndex JSON معتبر نبود."
+        )
 
         return {
             "status": "error",
             "source": "tindex.app",
-            "message": "پاسخ TIndex JSON معتبر نبود."
-        }
-
-
-def get_market_watch():
-    global _cache_data
-    global _cache_time
-
-    now = time.time()
-
-    _reset_daily_counter()
-
-    # اگر کش موجود باشد، اصلاً به TIndex درخواست نمی‌زنیم.
-    if _cache_data is not None:
-        return {
-            "status": "ok",
-            "source": "tindex.app",
-            "cached": True,
-            "data": _cache_data,
-            "daily_requests_used": _daily_requests_used,
-            "daily_requests_remaining": max(
-                0,
-                MAX_DAILY_REQUESTS - _daily_requests_used
+            "message": _last_error,
+            "daily_requests_used": (
+                daily_requests_used()
+            ),
+            "daily_requests_remaining": (
+                daily_requests_remaining()
             )
         }
 
-    # اولین دریافت
-    result = _request_tindex()
 
-    if result["status"] == "ok":
-        _cache_data = result["data"]
-        _cache_time = now
+# =========================================================
+# OVERVIEW
+# =========================================================
 
-    return result
+def get_market_watch():
+
+    return make_tindex_request(
+        OVERVIEW_URL
+    )
 
 
 def refresh_market_watch():
-    """
-    دریافت دستی داده جدید.
-    فقط در صورت عبور از محدودیت 60 ثانیه
-    و سقف روزانه درخواست ارسال می‌شود.
-    """
 
-    global _cache_data
-    global _cache_time
+    return make_tindex_request(
+        OVERVIEW_URL
+    )
 
-    _reset_daily_counter()
 
-    result = _request_tindex()
-
-    if result["status"] == "ok":
-        _cache_data = result["data"]
-        _cache_time = time.time()
-
-    return result
-
+# =========================================================
+# STATUS
+# =========================================================
 
 def get_status():
+
     _reset_daily_counter()
 
     return {
         "status": "healthy",
         "source": "tindex.app",
-        "cached": _cache_data is not None,
-        "cache_age_seconds": (
-            round(time.time() - _cache_time)
-            if _cache_data is not None
-            else None
+        "market_start": "09:00",
+        "first_request_after_seconds": 75,
+        "request_interval_seconds": (
+            REQUEST_INTERVAL
         ),
-        "daily_requests_used": _daily_requests_used,
-        "daily_requests_remaining": max(
-            0,
-            MAX_DAILY_REQUESTS - _daily_requests_used
+        "daily_limit": DAILY_LIMIT,
+        "daily_requests_used": (
+            daily_requests_used()
+        ),
+        "daily_requests_remaining": (
+            daily_requests_remaining()
+        ),
+        "seconds_until_next_request": (
+            seconds_until_next_request()
+        ),
+        "last_request_time": (
+            time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(
+                    _last_request_time
+                )
+            )
+            if _last_request_time > 0
+            else None
         ),
         "last_error": _last_error
     }
