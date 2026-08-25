@@ -130,7 +130,7 @@ class MainActivity : Activity() {
             PeriodicWorkRequestBuilder<
                 RenderKeepAliveWorker
             >(
-                15,
+                12,
                 TimeUnit.MINUTES
             ).build()
 
