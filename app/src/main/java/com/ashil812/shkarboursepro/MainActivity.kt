@@ -9,17 +9,18 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import org.json.JSONArray
-import org.json.JSONObject
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.TimeUnit
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.concurrent.thread
 
-class MainActivity : Activity() {
 
-    // =========================================================
-    // API
-    // =========================================================
+class MainActivity : Activity() {
 
     private val baseApiUrl =
         "https://shkar-bourse-pro2.onrender.com"
@@ -34,17 +35,10 @@ class MainActivity : Activity() {
         "$baseApiUrl/six-month-opportunities"
 
 
-    // =========================================================
-    // UI
-    // =========================================================
-
     private lateinit var content: LinearLayout
+
     private lateinit var refreshButton: Button
 
-
-    // =========================================================
-    // COLORS
-    // =========================================================
 
     private val backgroundColor =
         Color.rgb(10, 18, 30)
@@ -58,10 +52,6 @@ class MainActivity : Activity() {
     private val whiteColor =
         Color.WHITE
 
-
-    // =========================================================
-    // TEXT
-    // =========================================================
 
     private fun makeText(
         value: String,
@@ -77,8 +67,7 @@ class MainActivity : Activity() {
 
             setTextColor(color)
 
-            gravity =
-                Gravity.RIGHT
+            gravity = Gravity.RIGHT
 
             setPadding(
                 20,
@@ -90,15 +79,9 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // CARD
-    // =========================================================
-
     private fun makeCard(): LinearLayout {
 
-        return LinearLayout(
-            this
-        ).apply {
+        return LinearLayout(this).apply {
 
             orientation =
                 LinearLayout.VERTICAL
@@ -117,10 +100,6 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // ON CREATE
-    // =========================================================
-
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
@@ -129,6 +108,12 @@ class MainActivity : Activity() {
             savedInstanceState
         )
 
+        // ---------------------------------------------
+        // فعال کردن Keep Alive
+        // ---------------------------------------------
+
+        scheduleRenderKeepAlive()
+
         buildMainScreen()
 
         loadAllData()
@@ -136,8 +121,32 @@ class MainActivity : Activity() {
 
 
     // =========================================================
-    // BUILD MAIN SCREEN
+    // RENDER KEEP ALIVE
     // =========================================================
+
+    private fun scheduleRenderKeepAlive() {
+
+        val request =
+            PeriodicWorkRequestBuilder<
+                RenderKeepAliveWorker
+            >(
+                15,
+                TimeUnit.MINUTES
+            ).build()
+
+
+        WorkManager
+            .getInstance(applicationContext)
+            .enqueueUniquePeriodicWork(
+
+                "ShkarBourseRenderKeepAlive",
+
+                ExistingPeriodicWorkPolicy.KEEP,
+
+                request
+            )
+    }
+
 
     private fun buildMainScreen() {
 
@@ -152,10 +161,6 @@ class MainActivity : Activity() {
                 )
             }
 
-
-        // ---------------------------------------------------------
-        // HEADER
-        // ---------------------------------------------------------
 
         val header =
             LinearLayout(this).apply {
@@ -198,10 +203,6 @@ class MainActivity : Activity() {
         )
 
 
-        // ---------------------------------------------------------
-        // REFRESH BUTTON
-        // ---------------------------------------------------------
-
         refreshButton =
             Button(this).apply {
 
@@ -211,7 +212,6 @@ class MainActivity : Activity() {
                 textSize = 15f
 
                 setOnClickListener {
-
                     loadAllData()
                 }
             }
@@ -222,6 +222,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
+
 
         refreshParams.setMargins(
             20,
@@ -236,10 +237,6 @@ class MainActivity : Activity() {
             refreshParams
         )
 
-
-        // ---------------------------------------------------------
-        // SCROLL
-        // ---------------------------------------------------------
 
         val scrollView =
             ScrollView(this)
@@ -284,10 +281,6 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // LOADING
-    // =========================================================
-
     private fun showLoading() {
 
         content.removeAllViews()
@@ -310,10 +303,6 @@ class MainActivity : Activity() {
         )
     }
 
-
-    // =========================================================
-    // LOAD ALL
-    // =========================================================
 
     private fun loadAllData() {
 
@@ -392,10 +381,6 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // HTTP REQUEST
-    // =========================================================
-
     private fun requestJson(
         apiUrl: String
     ): JSONObject {
@@ -438,7 +423,6 @@ class MainActivity : Activity() {
 
 
             val stream =
-
                 if (
                     responseCode in 200..299
                 ) {
@@ -481,10 +465,6 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // HEALTH
-    // =========================================================
-
     private fun showHealth(
         json: JSONObject
     ) {
@@ -516,13 +496,9 @@ class MainActivity : Activity() {
 
 
         val marketText =
-
             if (marketOpen) {
-
                 "🟢 بازار باز است"
-
             } else {
-
                 "🔴 بازار بسته است"
             }
 
@@ -551,8 +527,8 @@ class MainActivity : Activity() {
 
 
         if (
-            totalSymbols != null
-            && totalSymbols != JSONObject.NULL
+            totalSymbols != null &&
+            totalSymbols != JSONObject.NULL
         ) {
 
             card.addView(
@@ -632,9 +608,7 @@ class MainActivity : Activity() {
             )
 
 
-        if (
-            nextRequest > 0
-        ) {
+        if (nextRequest > 0) {
 
             card.addView(
                 makeText(
@@ -660,12 +634,9 @@ class MainActivity : Activity() {
             )
 
 
-        if (
-            historyStarted
-        ) {
+        if (historyStarted) {
 
             val historyText =
-
                 if (historyComplete) {
 
                     "📚 تاریخچه نمادهای برتر کامل شده است."
@@ -686,15 +657,9 @@ class MainActivity : Activity() {
         }
 
 
-        addCard(
-            card
-        )
+        addCard(card)
     }
 
-
-    // =========================================================
-    // SHORT TERM
-    // =========================================================
 
     private fun showShortTerm(
         json: JSONObject
@@ -715,9 +680,7 @@ class MainActivity : Activity() {
         )
 
 
-        if (
-            status != "ok"
-        ) {
+        if (status != "ok") {
 
             content.addView(
                 makeText(
@@ -741,8 +704,8 @@ class MainActivity : Activity() {
 
 
         if (
-            opportunities == null
-            || opportunities.length() == 0
+            opportunities == null ||
+            opportunities.length() == 0
         ) {
 
             content.addView(
@@ -774,10 +737,6 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // SIX MONTH
-    // =========================================================
-
     private fun showSixMonth(
         json: JSONObject
     ) {
@@ -797,9 +756,7 @@ class MainActivity : Activity() {
         )
 
 
-        if (
-            status != "ok"
-        ) {
+        if (status != "ok") {
 
             content.addView(
                 makeText(
@@ -823,8 +780,8 @@ class MainActivity : Activity() {
 
 
         if (
-            opportunities == null
-            || opportunities.length() == 0
+            opportunities == null ||
+            opportunities.length() == 0
         ) {
 
             content.addView(
@@ -855,10 +812,6 @@ class MainActivity : Activity() {
         }
     }
 
-
-    // =========================================================
-    // OPPORTUNITY CARD
-    // =========================================================
 
     private fun addOpportunityCard(
         item: JSONObject,
@@ -933,14 +886,9 @@ class MainActivity : Activity() {
 
 
         val pe =
-            if (
-                item.isNull("pe")
-            ) {
-
+            if (item.isNull("pe")) {
                 "---"
-
             } else {
-
                 item.optString(
                     "pe",
                     "---"
@@ -985,10 +933,6 @@ class MainActivity : Activity() {
         )
 
 
-        // ---------------------------------------------------------
-        // SCORE
-        // ---------------------------------------------------------
-
         card.addView(
             makeText(
                 "⭐ امتیاز تحلیلی: $score / 100",
@@ -997,9 +941,7 @@ class MainActivity : Activity() {
         )
 
 
-        if (
-            sector.isNotBlank()
-        ) {
+        if (sector.isNotBlank()) {
 
             card.addView(
                 makeText(
@@ -1085,17 +1027,13 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // REASONS
-    // =========================================================
-
     private fun getReasonsText(
         reasons: JSONArray?
     ): String {
 
         if (
-            reasons == null
-            || reasons.length() == 0
+            reasons == null ||
+            reasons.length() == 0
         ) {
 
             return "نیازمند بررسی عمیق‌تر"
@@ -1111,9 +1049,7 @@ class MainActivity : Activity() {
                 append("• ")
 
                 append(
-                    reasons.optString(
-                        i
-                    )
+                    reasons.optString(i)
                 )
 
 
@@ -1129,17 +1065,13 @@ class MainActivity : Activity() {
     }
 
 
-    // =========================================================
-    // FORMAT VALUE
-    // =========================================================
-
     private fun formatValue(
         value: Any?
     ): String {
 
         if (
-            value == null
-            || value == JSONObject.NULL
+            value == null ||
+            value == JSONObject.NULL
         ) {
 
             return "---"
@@ -1150,12 +1082,9 @@ class MainActivity : Activity() {
 
             is Double -> {
 
-                if (
-                    value % 1.0 == 0.0
-                ) {
+                if (value % 1.0 == 0.0) {
 
-                    value.toLong()
-                        .toString()
+                    value.toLong().toString()
 
                 } else {
 
@@ -1169,12 +1098,9 @@ class MainActivity : Activity() {
 
             is Float -> {
 
-                if (
-                    value % 1f == 0f
-                ) {
+                if (value % 1f == 0f) {
 
-                    value.toLong()
-                        .toString()
+                    value.toLong().toString()
 
                 } else {
 
@@ -1186,17 +1112,10 @@ class MainActivity : Activity() {
             }
 
 
-            else -> {
-
-                value.toString()
-            }
+            else -> value.toString()
         }
     }
 
-
-    // =========================================================
-    // ADD CARD
-    // =========================================================
 
     private fun addCard(
         view: View
@@ -1223,10 +1142,6 @@ class MainActivity : Activity() {
         )
     }
 
-
-    // =========================================================
-    // SEPARATOR
-    // =========================================================
 
     private fun addSeparator() {
 
@@ -1264,10 +1179,6 @@ class MainActivity : Activity() {
         )
     }
 
-
-    // =========================================================
-    // ERROR
-    // =========================================================
 
     private fun showError(
         message: String
