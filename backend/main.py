@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 app = FastAPI(
     title="Shkar Bourse API",
-    version="11.0.0"
+    version="12.0.0"
 )
 
 
@@ -51,7 +51,10 @@ PER_PAGE = 100
 
 MAX_PAGES = 5000
 
-# دو چرخه کامل بازار
+# =========================================================
+# دقیقاً دو چرخه بازار
+# =========================================================
+
 MARKET_CYCLES_BEFORE_HISTORY = 2
 
 HISTORY_RANGE = "3m"
@@ -107,8 +110,6 @@ _background_thread_started = False
 
 _state_lock = threading.Lock()
 
-# قفل اختصاصی درخواست TIndex
-# تضمین می‌کند دو Thread همزمان درخواست نفرستند.
 _tindex_request_lock = threading.Lock()
 
 
@@ -268,8 +269,12 @@ def register_request():
     with _state_lock:
 
         _daily_requests.append({
-            "date": today_string(),
-            "time": time.time()
+
+            "date":
+                today_string(),
+
+            "time":
+                time.time()
         })
 
 
@@ -389,7 +394,7 @@ def get_headers():
             "application/json",
 
         "User-Agent":
-            "ShkarBoursePro2/11.0"
+            "ShkarBoursePro2/12.0"
     }
 
 
@@ -448,10 +453,6 @@ def make_tindex_request(
     global _last_error
     global _last_request_time
 
-    # -----------------------------------------------------
-    # فقط یک Thread در هر لحظه اجازه درخواست دارد
-    # -----------------------------------------------------
-
     with _tindex_request_lock:
 
         headers = get_headers()
@@ -476,13 +477,22 @@ def make_tindex_request(
         if not allowed:
 
             return {
-                "status": "error",
-                "source": "local-rate-limit",
-                "message": reason,
+
+                "status":
+                    "error",
+
+                "source":
+                    "local-rate-limit",
+
+                "message":
+                    reason,
+
                 "wait_seconds":
                     seconds_until_next_request(),
+
                 "daily_requests_used":
                     daily_requests_used(),
+
                 "daily_requests_remaining":
                     daily_requests_remaining()
             }
@@ -520,9 +530,15 @@ def make_tindex_request(
                 )
 
                 return {
-                    "status": "error",
-                    "source": "tindex.app",
-                    "message": _last_error
+
+                    "status":
+                        "error",
+
+                    "source":
+                        "tindex.app",
+
+                    "message":
+                        _last_error
                 }
 
 
@@ -533,11 +549,19 @@ def make_tindex_request(
                 )
 
                 return {
-                    "status": "error",
-                    "source": "tindex.app",
-                    "message": _last_error,
+
+                    "status":
+                        "error",
+
+                    "source":
+                        "tindex.app",
+
+                    "message":
+                        _last_error,
+
                     "daily_requests_used":
                         daily_requests_used(),
+
                     "daily_requests_remaining":
                         daily_requests_remaining()
                 }
@@ -558,9 +582,15 @@ def make_tindex_request(
                 )
 
                 return {
-                    "status": "error",
-                    "source": "tindex.app",
-                    "message": _last_error
+
+                    "status":
+                        "error",
+
+                    "source":
+                        "tindex.app",
+
+                    "message":
+                        _last_error
                 }
 
 
@@ -578,9 +608,15 @@ def make_tindex_request(
                 )
 
                 return {
-                    "status": "error",
-                    "source": "tindex.app",
-                    "message": _last_error
+
+                    "status":
+                        "error",
+
+                    "source":
+                        "tindex.app",
+
+                    "message":
+                        _last_error
                 }
 
 
@@ -589,17 +625,17 @@ def make_tindex_request(
 
             return {
 
-                "status": "ok",
+                "status":
+                    "ok",
 
-                "source": "tindex.app",
+                "source":
+                    "tindex.app",
 
-                "data": result.get(
-                    "data"
-                ),
+                "data":
+                    result.get("data"),
 
-                "meta": result.get(
-                    "meta"
-                )
+                "meta":
+                    result.get("meta")
             }
 
 
@@ -609,9 +645,11 @@ def make_tindex_request(
 
             return {
 
-                "status": "error",
+                "status":
+                    "error",
 
-                "source": "tindex.app",
+                "source":
+                    "tindex.app",
 
                 "message":
                     "خطا در اتصال به TIndex: "
@@ -627,11 +665,14 @@ def make_tindex_request(
 
             return {
 
-                "status": "error",
+                "status":
+                    "error",
 
-                "source": "tindex.app",
+                "source":
+                    "tindex.app",
 
-                "message": _last_error
+                "message":
+                    _last_error
             }
 
 
@@ -654,13 +695,17 @@ def get_overview():
 
         return {
 
-            "status": "ok",
+            "status":
+                "ok",
 
-            "source": "tindex.app",
+            "source":
+                "tindex.app",
 
-            "cached": True,
+            "cached":
+                True,
 
-            "data": _cache_data
+            "data":
+                _cache_data
         }
 
 
@@ -682,13 +727,17 @@ def get_overview():
 
     return {
 
-        "status": "ok",
+        "status":
+            "ok",
 
-        "source": "tindex.app",
+        "source":
+            "tindex.app",
 
-        "cached": False,
+        "cached":
+            False,
 
-        "data": _cache_data
+        "data":
+            _cache_data
     }
 
 
@@ -709,6 +758,7 @@ def reset_market_cycle():
     global _market_completed_at
 
     global _market_buffer
+
 
     _market_page = 1
 
@@ -742,6 +792,11 @@ def finish_market_cycle():
     global _market_page
     global _market_buffer
 
+
+    # =====================================================
+    # ذخیره کامل‌ترین داده دریافت‌شده
+    # =====================================================
+
     _full_market_cache = list(
         _market_buffer
     )
@@ -749,6 +804,7 @@ def finish_market_cycle():
     _full_market_cache_time = (
         time.time()
     )
+
 
     _market_complete = True
 
@@ -758,7 +814,21 @@ def finish_market_cycle():
         time.time()
     )
 
+
+    # =====================================================
+    # افزایش تعداد چرخه
+    # =====================================================
+
     _market_cycles_completed += 1
+
+
+    # =====================================================
+    # نکته مهم:
+    #
+    # بعد از پایان چرخه، page به 1 برمی‌گردد
+    # ولی چون collector بعد از دو چرخه
+    # دیگر اجازه reset ندارد، چرخه سوم ساخته نمی‌شود.
+    # =====================================================
 
     _market_page = 1
 
@@ -782,6 +852,7 @@ def reset_history():
 
     global _history_started_at
     global _history_completed_at
+
 
     _history_started = False
 
@@ -822,6 +893,7 @@ def calculate_score(stock):
 
     score = 0.0
 
+
     change = safe_number(
         stock.get(
             "change",
@@ -831,6 +903,7 @@ def calculate_score(stock):
             )
         )
     )
+
 
     value = safe_number(
         stock.get(
@@ -842,12 +915,14 @@ def calculate_score(stock):
         )
     )
 
+
     volume = safe_number(
         stock.get(
             "volume",
             0
         )
     )
+
 
     market_cap = safe_number(
         stock.get(
@@ -856,46 +931,91 @@ def calculate_score(stock):
         )
     )
 
+
     pe = stock.get(
         "pe"
     )
 
 
+    # -----------------------------------------------------
+    # تغییر قیمت
+    # -----------------------------------------------------
+
     if change >= 3:
+
         score += 20
+
     elif change >= 2:
+
         score += 15
+
     elif change >= 1:
+
         score += 8
+
     elif change > 0:
+
         score += 4
+
     elif change <= -3:
+
         score -= 15
+
     elif change <= -2:
+
         score -= 10
 
 
+    # -----------------------------------------------------
+    # ارزش معاملات
+    # -----------------------------------------------------
+
     if value >= 10_000_000_000_000:
+
         score += 20
+
     elif value >= 5_000_000_000_000:
+
         score += 15
+
     elif value >= 1_000_000_000_000:
+
         score += 10
+
     elif value >= 100_000_000_000:
+
         score += 5
 
 
+    # -----------------------------------------------------
+    # حجم
+    # -----------------------------------------------------
+
     if volume >= 1_000_000_000:
+
         score += 10
+
     elif volume >= 100_000_000:
+
         score += 6
+
     elif volume >= 10_000_000:
+
         score += 3
 
 
+    # -----------------------------------------------------
+    # ارزش بازار
+    # -----------------------------------------------------
+
     if market_cap > 0:
+
         score += 5
 
+
+    # -----------------------------------------------------
+    # P/E
+    # -----------------------------------------------------
 
     if pe is not None:
 
@@ -905,14 +1025,23 @@ def calculate_score(stock):
         )
 
         if 0 < pe_value <= 6:
+
             score += 15
+
         elif 6 < pe_value <= 10:
+
             score += 10
+
         elif 10 < pe_value <= 15:
+
             score += 5
+
         elif pe_value > 30:
+
             score -= 8
+
         elif pe_value < 0:
+
             score -= 5
 
 
@@ -929,6 +1058,7 @@ def build_reasons(stock):
 
     reasons = []
 
+
     change = safe_number(
         stock.get(
             "change",
@@ -939,6 +1069,7 @@ def build_reasons(stock):
         )
     )
 
+
     value = safe_number(
         stock.get(
             "value",
@@ -948,6 +1079,7 @@ def build_reasons(stock):
             )
         )
     )
+
 
     pe = stock.get(
         "pe"
@@ -1020,13 +1152,17 @@ def normalize_stock(stock):
 
     return {
 
-        "slug": stock.get("slug"),
+        "slug":
+            stock.get("slug"),
 
-        "ticker": stock.get("ticker"),
+        "ticker":
+            stock.get("ticker"),
 
-        "name": stock.get("name"),
+        "name":
+            stock.get("name"),
 
-        "sector": stock.get("sector"),
+        "sector":
+            stock.get("sector"),
 
         "current_price":
             stock.get(
@@ -1055,7 +1191,9 @@ def normalize_stock(stock):
             ),
 
         "volume":
-            stock.get("volume"),
+            stock.get(
+                "volume"
+            ),
 
         "trade_value":
             stock.get(
@@ -1071,7 +1209,9 @@ def normalize_stock(stock):
             ),
 
         "pe":
-            stock.get("pe"),
+            stock.get(
+                "pe"
+            ),
 
         "updated_at":
             stock.get(
@@ -1090,6 +1230,7 @@ def analyze_full_market(stocks):
 
     candidates = []
 
+
     for stock in stocks:
 
         if not is_valid_stock(stock):
@@ -1100,48 +1241,73 @@ def analyze_full_market(stocks):
         )
 
 
+    # =====================================================
+    # کوتاه مدت
+    # =====================================================
+
     short_term = sorted(
+
         candidates,
+
         key=lambda x: (
+
             x["score"],
+
             safe_number(
                 x["trade_value"]
             ),
+
             safe_number(
                 x["change_percent"]
             )
         ),
+
         reverse=True
     )
 
 
+    # =====================================================
+    # شش ماهه
+    # =====================================================
+
     six_month = sorted(
+
         candidates,
+
         key=lambda x: (
+
             x["score"],
+
             safe_number(
                 x["market_cap"]
             ),
+
             safe_number(
                 x["trade_value"]
             )
         ),
+
         reverse=True
     )
 
 
     gainers = sorted(
+
         candidates,
+
         key=lambda x:
             safe_number(
                 x["change_percent"]
             ),
+
         reverse=True
     )
 
 
     losers = sorted(
+
         candidates,
+
         key=lambda x:
             safe_number(
                 x["change_percent"]
@@ -1150,11 +1316,14 @@ def analyze_full_market(stocks):
 
 
     most_active = sorted(
+
         candidates,
+
         key=lambda x:
             safe_number(
                 x["trade_value"]
             ),
+
         reverse=True
     )
 
@@ -1197,15 +1366,24 @@ def build_history_queue():
     global _history_started_at
 
 
+    # -----------------------------------------------------
+    # اگر قبلاً ساخته شده، دوباره نساز
+    # -----------------------------------------------------
+
     if _history_started:
         return
 
+
+    # -----------------------------------------------------
+    # History فقط بعد از دو چرخه
+    # -----------------------------------------------------
 
     if (
         _market_cycles_completed
         <
         MARKET_CYCLES_BEFORE_HISTORY
     ):
+
         return
 
 
@@ -1213,19 +1391,21 @@ def build_history_queue():
         _full_market_cache,
         list
     ):
+
         return
 
-
-    # =====================================================
-    # مهم:
-    # تعداد نمادهای History دقیقاً برابر
-    # تعداد درخواست‌های باقی‌مانده است.
-    # =====================================================
 
     remaining_requests = (
         daily_requests_remaining()
     )
 
+
+    # -----------------------------------------------------
+    # اگر سهمیه تمام شده:
+    # History تمام‌شده در نظر گرفته می‌شود.
+    # اما مهم:
+    # تحلیل بازار همچنان فعال می‌ماند.
+    # -----------------------------------------------------
 
     if remaining_requests <= 0:
 
@@ -1235,35 +1415,46 @@ def build_history_queue():
 
         _history_total_requested = 0
 
+        _history_total_completed = 0
+
+        _history_started_at = (
+            time.time()
+        )
+
         return
 
 
-    # =====================================================
-    # رتبه‌بندی کل بازار
-    # =====================================================
+    # -----------------------------------------------------
+    # رتبه‌بندی بازار
+    # -----------------------------------------------------
 
     all_ranked = sorted(
 
         [
+
             normalize_stock(stock)
 
             for stock in _full_market_cache
 
             if is_valid_stock(stock)
+
         ],
 
         key=lambda x: (
+
             x["score"],
+
             safe_number(
                 x["trade_value"]
             ),
+
             safe_number(
                 x["change_percent"]
             )
         ),
 
         reverse=True
-    )
+    ]
 
 
     all_ranked = [
@@ -1275,15 +1466,6 @@ def build_history_queue():
         if stock.get("slug")
     ]
 
-
-    # =====================================================
-    # تعداد History
-    #
-    # هیچ سقف مصنوعی مثل 20 یا 100 اعمال نمی‌کنیم.
-    #
-    # فقط:
-    # remaining requests
-    # =====================================================
 
     history_count = min(
 
@@ -1330,13 +1512,16 @@ def request_stock_history(stock):
         "slug"
     )
 
+
     if not slug:
 
         return {
 
-            "status": "error",
+            "status":
+                "error",
 
-            "source": "local",
+            "source":
+                "local",
 
             "message":
                 "slug نماد برای History وجود ندارد."
@@ -1354,7 +1539,8 @@ def request_stock_history(stock):
         history_url,
 
         params={
-            "range": HISTORY_RANGE
+            "range":
+                HISTORY_RANGE
         }
     )
 
@@ -1365,11 +1551,14 @@ def request_stock_history(stock):
 
     return {
 
-        "status": "ok",
+        "status":
+            "ok",
 
-        "source": "tindex.app",
+        "source":
+            "tindex.app",
 
-        "slug": slug,
+        "slug":
+            slug,
 
         "ticker":
             stock.get("ticker"),
@@ -1398,9 +1587,9 @@ def collect_history_background():
 
         try:
 
-            # -------------------------------------------------
+            # ------------------------------------------------
             # روز معاملاتی
-            # -------------------------------------------------
+            # ------------------------------------------------
 
             if not is_trading_day():
 
@@ -1409,9 +1598,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
-            # بازار باید باز باشد
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # بازار باز
+            # ------------------------------------------------
 
             if not is_market_open():
 
@@ -1420,9 +1609,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
-            # دو چرخه کامل
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # فقط بعد از دو چرخه
+            # ------------------------------------------------
 
             if (
                 _market_cycles_completed
@@ -1435,18 +1624,18 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
+            # ------------------------------------------------
             # ساخت صف
-            # -------------------------------------------------
+            # ------------------------------------------------
 
             if not _history_started:
 
                 build_history_queue()
 
 
-            # -------------------------------------------------
-            # تمام شده
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # History تمام شده
+            # ------------------------------------------------
 
             if _history_complete:
 
@@ -1455,9 +1644,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
-            # سهمیه
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # سهمیه تمام شده
+            # ------------------------------------------------
 
             if daily_requests_remaining() <= 0:
 
@@ -1470,9 +1659,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
-            # فاصله
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # فاصله بین درخواست‌ها
+            # ------------------------------------------------
 
             wait_seconds = (
                 seconds_until_next_request()
@@ -1482,8 +1671,11 @@ def collect_history_background():
             if wait_seconds > 0:
 
                 time.sleep(
+
                     min(
+
                         30,
+
                         max(
                             1,
                             wait_seconds
@@ -1494,9 +1686,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
-            # صف
-            # -------------------------------------------------
+            # ------------------------------------------------
+            # صف خالی
+            # ------------------------------------------------
 
             if not _history_queue:
 
@@ -1509,9 +1701,9 @@ def collect_history_background():
                 continue
 
 
-            # -------------------------------------------------
+            # ------------------------------------------------
             # نماد بعدی
-            # -------------------------------------------------
+            # ------------------------------------------------
 
             stock = _history_queue.pop(0)
 
@@ -1526,6 +1718,7 @@ def collect_history_background():
                 slug = stock.get(
                     "slug"
                 )
+
 
                 _history_results[slug] = {
 
@@ -1564,6 +1757,7 @@ def collect_history_background():
                         )
                 }
 
+
                 _history_total_completed += 1
 
 
@@ -1573,6 +1767,10 @@ def collect_history_background():
                     "message"
                 )
 
+
+            # ------------------------------------------------
+            # پایان History
+            # ------------------------------------------------
 
             if not _history_queue:
 
@@ -1630,6 +1828,7 @@ def collect_market_background():
 
                 local_day = current_day
 
+
                 with _state_lock:
 
                     _daily_requests = []
@@ -1676,7 +1875,7 @@ def collect_market_background():
 
 
             # =================================================
-            # خارج بازار
+            # بازار بسته
             # =================================================
 
             if not is_market_open():
@@ -1685,11 +1884,15 @@ def collect_market_background():
                     seconds_until_market_start()
                 )
 
+
                 if wait_start > 0:
 
                     time.sleep(
+
                         min(
+
                             30,
+
                             max(
                                 1,
                                 wait_start
@@ -1705,20 +1908,12 @@ def collect_market_background():
 
 
             # =================================================
-            # سقف روزانه
-            # =================================================
-
-            if daily_requests_remaining() <= 0:
-
-                time.sleep(30)
-
-                continue
-
-
-            # =================================================
-            # بعد از دو چرخه
+            # اگر دو چرخه کامل شده:
             #
-            # History Collector ادامه می‌دهد.
+            # اینجا بسیار مهم است.
+            #
+            # دیگر تحت هیچ شرایطی reset_market_cycle()
+            # یا درخواست STOCKS_URL انجام نمی‌شود.
             # =================================================
 
             if (
@@ -1727,9 +1922,15 @@ def collect_market_background():
                 MARKET_CYCLES_BEFORE_HISTORY
             ):
 
+                _market_collecting = False
+
+                _market_complete = True
+
+
                 if not _history_started:
 
                     build_history_queue()
+
 
                 time.sleep(5)
 
@@ -1737,7 +1938,20 @@ def collect_market_background():
 
 
             # =================================================
-            # فاصله
+            # سهمیه تمام شده
+            # =================================================
+
+            if daily_requests_remaining() <= 0:
+
+                _market_collecting = False
+
+                time.sleep(30)
+
+                continue
+
+
+            # =================================================
+            # فاصله درخواست
             # =================================================
 
             wait_seconds = (
@@ -1748,8 +1962,11 @@ def collect_market_background():
             if wait_seconds > 0:
 
                 time.sleep(
+
                     min(
+
                         30,
+
                         max(
                             1,
                             wait_seconds
@@ -1766,6 +1983,23 @@ def collect_market_background():
 
             if not _market_collecting:
 
+                # ---------------------------------------------
+                # محافظ قطعی برای جلوگیری از چرخه سوم
+                # ---------------------------------------------
+
+                if (
+                    _market_cycles_completed
+                    >=
+                    MARKET_CYCLES_BEFORE_HISTORY
+                ):
+
+                    _market_collecting = False
+
+                    _market_complete = True
+
+                    continue
+
+
                 reset_market_cycle()
 
 
@@ -1773,7 +2007,7 @@ def collect_market_background():
 
 
             # =================================================
-            # درخواست
+            # درخواست بازار
             # =================================================
 
             result = make_tindex_request(
@@ -1781,8 +2015,12 @@ def collect_market_background():
                 STOCKS_URL,
 
                 params={
-                    "page": page,
-                    "per_page": PER_PAGE
+
+                    "page":
+                        page,
+
+                    "per_page":
+                        PER_PAGE
                 }
             )
 
@@ -1930,7 +2168,7 @@ def collect_market_background():
 
 
             # =================================================
-            # تعداد واقعی صفحات
+            # محاسبه قطعی تعداد صفحات
             # =================================================
 
             if (
@@ -1953,9 +2191,11 @@ def collect_market_background():
                     // PER_PAGE
                 )
 
+
                 _market_last_page = (
                     required_pages
                 )
+
 
                 has_more = (
                     page
@@ -1968,7 +2208,7 @@ def collect_market_background():
             # پایان چرخه
             # =================================================
 
-            if (
+            cycle_finished = (
 
                 not has_more
 
@@ -1983,13 +2223,40 @@ def collect_market_background():
                 or
 
                 page >= MAX_PAGES
+            )
 
-            ):
+
+            if cycle_finished:
 
                 finish_market_cycle()
 
+                # ---------------------------------------------
+                # اگر چرخه دوم تمام شده:
+                #
+                # بلافاصله بازار را قفل کن.
+                # ---------------------------------------------
+
+                if (
+                    _market_cycles_completed
+                    >=
+                    MARKET_CYCLES_BEFORE_HISTORY
+                ):
+
+                    _market_collecting = False
+
+                    _market_complete = True
+
+                    if not _history_started:
+
+                        build_history_queue()
+
+
                 continue
 
+
+            # =================================================
+            # صفحه بعد
+            # =================================================
 
             _market_page += 1
 
@@ -2011,6 +2278,7 @@ def start_background_collectors():
 
     global _background_thread_started
 
+
     if _background_thread_started:
         return
 
@@ -2019,16 +2287,26 @@ def start_background_collectors():
 
 
     market_thread = threading.Thread(
-        target=collect_market_background,
+
+        target=
+            collect_market_background,
+
         daemon=True,
-        name="market-collector"
+
+        name=
+            "market-collector"
     )
 
 
     history_thread = threading.Thread(
-        target=collect_history_background,
+
+        target=
+            collect_history_background,
+
         daemon=True,
-        name="history-collector"
+
+        name=
+            "history-collector"
     )
 
 
@@ -2052,13 +2330,14 @@ def root():
 
     return {
 
-        "status": "ok",
+        "status":
+            "ok",
 
         "message":
             "Shkar Bourse API is running",
 
         "version":
-            "11.0.0",
+            "12.0.0",
 
         "source":
             "tindex.app",
@@ -2082,7 +2361,10 @@ def root():
             MARKET_CYCLES_BEFORE_HISTORY,
 
         "history_range":
-            HISTORY_RANGE
+            HISTORY_RANGE,
+
+        "analysis_available_after_daily_limit":
+            True
     }
 
 
@@ -2093,6 +2375,16 @@ def root():
 @app.get("/health")
 def health():
 
+    analysis_ready = (
+        isinstance(
+            _full_market_cache,
+            list
+        )
+        and
+        len(_full_market_cache) > 0
+    )
+
+
     return {
 
         "status":
@@ -2102,7 +2394,7 @@ def health():
             "tindex.app",
 
         "version":
-            "11.0.0",
+            "12.0.0",
 
         "market_mode":
             current_market_mode(),
@@ -2116,7 +2408,6 @@ def health():
         "market_end":
             "12:30",
 
-
         "market_collecting":
             _market_collecting,
 
@@ -2125,6 +2416,9 @@ def health():
 
         "market_cycles_completed":
             _market_cycles_completed,
+
+        "market_cycles_target":
+            MARKET_CYCLES_BEFORE_HISTORY,
 
         "current_page":
             _market_page,
@@ -2145,6 +2439,14 @@ def health():
                 else 0
             ),
 
+        "analysis_ready":
+            analysis_ready,
+
+        "short_term_available":
+            analysis_ready,
+
+        "six_month_available":
+            analysis_ready,
 
         "history_started":
             _history_started,
@@ -2163,7 +2465,6 @@ def health():
 
         "history_cached_symbols":
             len(_history_results),
-
 
         "daily_requests_used":
             daily_requests_used(),
@@ -2240,10 +2541,7 @@ def full_market():
                 daily_requests_used(),
 
             "daily_requests_remaining":
-                daily_requests_remaining(),
-
-            "seconds_until_next_request":
-                seconds_until_next_request()
+                daily_requests_remaining()
         }
 
 
@@ -2294,7 +2592,15 @@ def full_market():
 @app.get("/full-analysis")
 def full_analysis():
 
-    if _full_market_cache is None:
+    # =====================================================
+    # تحلیل فقط به وجود کش بازار وابسته است
+    # نه به سهمیه باقی‌مانده TIndex
+    # =====================================================
+
+    if not isinstance(
+        _full_market_cache,
+        list
+    ):
 
         return {
 
@@ -2313,11 +2619,11 @@ def full_analysis():
             "current_page":
                 _market_page,
 
-            "last_page":
-                _market_last_page,
-
             "cached_stocks":
                 0,
+
+            "analysis_ready":
+                False,
 
             "daily_requests_used":
                 daily_requests_used(),
@@ -2338,7 +2644,7 @@ def full_analysis():
             "ok",
 
         "source":
-            "tindex.app",
+            "local-market-cache",
 
         "market_mode":
             current_market_mode(),
@@ -2353,6 +2659,9 @@ def full_analysis():
             _market_complete,
 
         "cached":
+            True,
+
+        "analysis_ready":
             True,
 
         "count":
@@ -2397,7 +2706,20 @@ def full_analysis():
 @app.get("/short-term-opportunities")
 def short_term_opportunities():
 
-    if _full_market_cache is None:
+    # =====================================================
+    # مهم:
+    #
+    # این endpoint دیگر به daily_requests_remaining
+    # وابسته نیست.
+    #
+    # حتی اگر 100 درخواست مصرف شده باشد،
+    # از آخرین full_market_cache استفاده می‌کند.
+    # =====================================================
+
+    if not isinstance(
+        _full_market_cache,
+        list
+    ):
 
         return {
 
@@ -2411,7 +2733,10 @@ def short_term_opportunities():
                 _market_cycles_completed,
 
             "cached_stocks":
-                0
+                0,
+
+            "analysis_ready":
+                False
         }
 
 
@@ -2424,7 +2749,11 @@ def short_term_opportunities():
 
 
     for rank, stock in enumerate(
-        analysis["short_term_top_20"][:10],
+
+        analysis[
+            "short_term_top_20"
+        ][:10],
+
         start=1
     ):
 
@@ -2471,7 +2800,7 @@ def short_term_opportunities():
             "ok",
 
         "source":
-            "tindex.app",
+            "local-market-cache",
 
         "section":
             "short_term_opportunities",
@@ -2481,6 +2810,15 @@ def short_term_opportunities():
 
         "count":
             len(opportunities),
+
+        "analysis_ready":
+            True,
+
+        "market_cycles_completed":
+            _market_cycles_completed,
+
+        "market_complete":
+            _market_complete,
 
         "opportunities":
             opportunities
@@ -2494,7 +2832,14 @@ def short_term_opportunities():
 @app.get("/six-month-opportunities")
 def six_month_opportunities():
 
-    if _full_market_cache is None:
+    # =====================================================
+    # این endpoint هم مستقل از سهمیه TIndex است.
+    # =====================================================
+
+    if not isinstance(
+        _full_market_cache,
+        list
+    ):
 
         return {
 
@@ -2508,7 +2853,10 @@ def six_month_opportunities():
                 _market_cycles_completed,
 
             "cached_stocks":
-                0
+                0,
+
+            "analysis_ready":
+                False
         }
 
 
@@ -2521,7 +2869,11 @@ def six_month_opportunities():
 
 
     for rank, stock in enumerate(
-        analysis["six_month_top_20"][:10],
+
+        analysis[
+            "six_month_top_20"
+        ][:10],
+
         start=1
     ):
 
@@ -2568,7 +2920,7 @@ def six_month_opportunities():
             "ok",
 
         "source":
-            "tindex.app",
+            "local-market-cache",
 
         "section":
             "six_month_opportunities",
@@ -2578,6 +2930,15 @@ def six_month_opportunities():
 
         "count":
             len(opportunities),
+
+        "analysis_ready":
+            True,
+
+        "market_cycles_completed":
+            _market_cycles_completed,
+
+        "market_complete":
+            _market_complete,
 
         "opportunities":
             opportunities
@@ -2732,7 +3093,10 @@ def single_history(
 @app.get("/scanner/step")
 def scanner_step():
 
-    if _full_market_cache is None:
+    if not isinstance(
+        _full_market_cache,
+        list
+    ):
 
         return {
 
@@ -2746,7 +3110,10 @@ def scanner_step():
                 _market_page,
 
             "cached_stocks":
-                0
+                0,
+
+            "analysis_ready":
+                False
         }
 
 
@@ -2761,7 +3128,7 @@ def scanner_step():
             "ok",
 
         "source":
-            "tindex.app",
+            "local-market-cache",
 
         "message":
             "اسکن کامل بازار با موفقیت انجام شد.",
@@ -2773,16 +3140,25 @@ def scanner_step():
             _market_cycles_completed,
 
         "top_gainers":
-            analysis["top_gainers"][:10],
+            analysis[
+                "top_gainers"
+            ][:10],
 
         "top_losers":
-            analysis["top_losers"][:10],
+            analysis[
+                "top_losers"
+            ][:10],
 
         "most_active":
-            analysis["most_active"][:10],
+            analysis[
+                "most_active"
+            ][:10],
 
         "market_complete":
             _market_complete,
+
+        "analysis_ready":
+            True,
 
         "daily_requests_used":
             daily_requests_used(),
